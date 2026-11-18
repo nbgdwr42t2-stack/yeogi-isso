@@ -1,0 +1,2426 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>여기있소 - 실내 소방 안전 관제 시스템 (경민대학교 예의관 5층)</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- Pretendard Font -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
+    <!-- MQTT 실시간 동기화 라이브러리 -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <!-- Three.js 3D 디지털 트윈 엔진 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * {
+            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+            box-sizing: border-box;
+        }
+        body {
+            background-color: #0b1120;
+            color: #f8fafc;
+            margin: 0;
+            overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .transition-smooth {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        @keyframes pulse-danger {
+            0%, 100% {
+                border-color: rgba(225, 29, 72, 1);
+                box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.5);
+            }
+            50% {
+                border-color: rgba(251, 113, 133, 0.9);
+                box-shadow: 0 0 0 12px rgba(225, 29, 72, 0);
+            }
+        }
+        .danger-ring {
+            animation: pulse-danger 1.2s infinite;
+        }
+        @keyframes laserScan {
+            0% { top: 0%; opacity: 0.9; }
+            50% { top: 96%; opacity: 1; }
+            100% { top: 0%; opacity: 0.9; }
+        }
+        .laser-bar {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, transparent, #38bdf8, #818cf8, #38bdf8, transparent);
+            box-shadow: 0 0 18px #38bdf8, 0 0 32px #6366f1;
+            animation: laserScan 1.6s infinite ease-in-out;
+        }
+        #sim-canvas-container {
+            position: relative;
+            width: 100%;
+            height: 520px;
+            border-radius: 1rem;
+            overflow: hidden;
+            background: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);
+        }
+        #sim-canvas-container canvas {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+            outline: none;
+        }
+        /* 출동 소방대원 진짜 3D 건축물 모형 캔버스 컨테이너 */
+        #ff-building-3d-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            background: radial-gradient(circle at center, #172554 0%, #020617 100%);
+        }
+        #ff-building-3d-container canvas {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+            outline: none;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col bg-slate-950 text-slate-100" id="body-tag">
+
+    <!-- 상단 내비게이션 및 뷰 스위처 -->
+    <header class="bg-slate-900 border-b border-slate-800 px-4 sm:px-6 py-3.5 shadow-md sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div class="flex items-center space-x-3.5">
+                <div class="w-12 h-12 rounded-2xl border-2 border-slate-700 bg-[#f7f5ee] grid grid-cols-2 grid-rows-2 items-center justify-items-center p-1 shadow-sm shrink-0 select-none">
+                    <span class="font-black text-rose-500 text-base leading-none">여</span>
+                    <span class="font-black text-slate-900 text-base leading-none">기</span>
+                    <span class="font-black text-slate-900 text-base leading-none">있</span>
+                    <span class="font-black text-rose-500 text-base leading-none">소</span>
+                </div>
+                <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <h1 class="text-lg sm:text-xl font-extrabold text-white tracking-tight">「여기있소」 관제 시스템</h1>
+                        <span id="sync-status-pill" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>서버 연결 중...
+                        </span>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-0.5">경민대학교 예의관 5층 실시간 인원 및 위험지역 관제</p>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <!-- 4개 탭 네비게이션 -->
+                <div class="inline-flex bg-slate-800 p-1 rounded-xl border border-slate-700">
+                    <button type="button" onclick="switchView('dashboard')" id="tab-dashboard" class="px-3 py-2 rounded-lg text-xs font-extrabold transition-smooth bg-slate-900 text-white shadow-xs flex items-center gap-1.5 cursor-pointer">
+                        <span>🖥️ 관제 대시보드</span>
+                    </button>
+                    <button type="button" onclick="switchView('firefighter')" id="tab-firefighter" class="px-3 py-2 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white flex items-center gap-1.5 cursor-pointer">
+                        <span>🚒 출동 소방대원</span>
+                    </button>
+                    <button type="button" onclick="switchView('simulator')" id="tab-simulator" class="px-3 py-2 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white flex items-center gap-1.5 cursor-pointer">
+                        <span>🎮 가상현장 시뮬레이터</span>
+                    </button>
+                    <button type="button" onclick="switchView('mobile')" id="tab-mobile" class="px-3 py-2 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white flex items-center gap-1.5 cursor-pointer">
+                        <span>📱 팀원 단말기</span>
+                    </button>
+                </div>
+
+                <!-- 비상시 모드 토글 -->
+                <button type="button" id="emergency-mode-btn" onclick="toggleEmergencyMode()" class="px-4 py-2 rounded-xl font-extrabold text-xs shadow-xs transition-smooth bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer">
+                    🟢 평상시 모드 (정상)
+                </button>
+
+                <!-- 초기화 버튼 -->
+                <button type="button" onclick="resetDemo()" class="px-3 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 shadow-2xs transition-smooth flex items-center gap-1.5 cursor-pointer" title="초기 상태로 되돌리기">
+                    <i class="fa-solid fa-rotate-right text-slate-400"></i>
+                    <span>초기화</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- ======================================================================= -->
+    <!-- VIEW 1: 관제 대시보드 (발표용 메인 노트북 화면)                        -->
+    <!-- ======================================================================= -->
+    <main id="view-dashboard" class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+        <div id="dash-intruder-banner" class="hidden bg-rose-600 border-2 border-rose-300 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-smooth shadow-lg danger-ring">
+            <div class="flex items-center space-x-3.5">
+                <div class="w-12 h-12 rounded-2xl bg-white text-rose-600 flex items-center justify-center text-2xl shrink-0 shadow-xs animate-bounce">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+                <div>
+                    <h2 id="dash-intruder-title" class="text-base sm:text-xl font-black text-white">⚠️ 위험구역 접근 감지!</h2>
+                    <p id="dash-intruder-desc" class="text-xs sm:text-sm text-rose-100 mt-0.5 font-semibold">위험지역으로 지정된 구역에 인원이 진입했습니다. 즉시 안전 구역으로 이동 조치하세요.</p>
+                </div>
+            </div>
+            <div class="self-end sm:self-center flex items-center gap-2">
+                <button type="button" id="mute-alarm-btn" onclick="toggleMuteAlarm()" class="px-4 py-2.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 text-xs font-extrabold transition-smooth flex items-center gap-1.5 cursor-pointer shadow-sm">
+                    <span>🔊 경보음 음소거</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 space-y-6">
+                <section class="bg-slate-900 rounded-2xl p-5 sm:p-6 border border-slate-800 shadow-sm">
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-5">
+                        <div>
+                            <h2 class="text-lg font-extrabold text-white">🏢 경민대학교 예의관 5층 평면도</h2>
+                            <p class="text-xs text-slate-400 mt-0.5">각 강의실 카드의 <b class="text-rose-400">위험지역 지정</b> 버튼을 눌러 경보 시연을 진행할 수 있습니다.</p>
+                        </div>
+                        <span class="px-3 py-1 bg-slate-800 text-slate-300 rounded-full text-xs font-bold border border-slate-700">대상 구역: 501 ~ 504호</span>
+                    </div>
+
+                    <div id="floor-rooms-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
+
+                    <div class="mt-5 py-2.5 px-4 bg-slate-950 rounded-xl border border-dashed border-slate-800 flex items-center justify-between text-xs text-slate-400 font-semibold">
+                        <span><i class="fa-solid fa-stairs mr-1.5 text-slate-500"></i>좌측 비상계단</span>
+                        <span>예의관 5층 중앙 복도</span>
+                        <span>우측 비상계단<i class="fa-solid fa-stairs ml-1.5 text-slate-500"></i></span>
+                    </div>
+                </section>
+
+                <div id="system-status-banner" class="bg-emerald-950/60 border border-emerald-800/80 rounded-2xl p-5 flex items-center justify-between transition-smooth">
+                    <div class="flex items-center space-x-3.5">
+                        <div id="system-status-dot" class="w-3.5 h-3.5 bg-emerald-500 rounded-full animate-pulse shrink-0"></div>
+                        <div>
+                            <h3 id="system-banner-title" class="font-extrabold text-emerald-200 text-sm sm:text-base">시스템 정상 작동 중</h3>
+                            <p id="system-banner-desc" class="text-xs text-emerald-400 mt-0.5">경민대학교 예의관 5층 블루투스 스캐너와 모든 단말기가 실시간 동기화 상태입니다.</p>
+                        </div>
+                    </div>
+                    <span id="system-banner-badge" class="text-xs font-extrabold text-emerald-300 bg-emerald-900/80 px-3 py-1.5 rounded-lg shrink-0 border border-emerald-700">LIVE 연결</span>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                <section class="bg-slate-900 rounded-2xl p-5 sm:p-6 shadow-sm border border-slate-800 flex flex-col justify-between h-full">
+                    <div>
+                        <div class="flex justify-between items-center mb-1.5">
+                            <h2 class="text-lg font-extrabold text-white">👥 실시간 체류 인원 명단</h2>
+                            <span id="occupant-summary-pill" class="text-xs font-extrabold text-slate-300 bg-slate-800 px-2.5 py-1 rounded-lg">체류 3명</span>
+                        </div>
+                        <p class="text-xs text-slate-400 mb-5">팀원 단말기에서 이동한 강의실과 상태가 즉시 반영됩니다.</p>
+
+                        <div id="occupant-status-list" class="space-y-3"></div>
+                    </div>
+
+                    <div class="mt-6 pt-4 border-t border-slate-800 text-center space-y-1">
+                        <p class="text-[11px] text-slate-500">※ 발표 시 경보음 재생을 위해 화면 빈 곳을 한 번 클릭해 주세요.</p>
+                        <p class="text-xs font-semibold text-slate-400">「여기있소」 실시간 소방 관제 솔루션</p>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    <!-- ======================================================================= -->
+    <!-- VIEW 2: 출동 소방대원 전용 관제 브리핑                                  -->
+    <!-- ======================================================================= -->
+    <main id="view-firefighter" class="hidden flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+        <div class="bg-gradient-to-r from-red-900 via-rose-900 to-slate-900 border-2 border-red-500/60 rounded-2xl p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 shadow-xl">
+            <div class="flex items-center space-x-4">
+                <div class="w-14 h-14 rounded-2xl bg-red-600 text-white flex items-center justify-center text-3xl shrink-0 shadow-lg animate-pulse">
+                    <i class="fa-solid fa-fire-extinguisher"></i>
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h2 class="text-lg sm:text-xl font-black text-white">🚒 출동 소방대원 긴급 브리핑 패널</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-red-600 text-white animate-pulse">현장 출동 지령</span>
+                    </div>
+                    <p class="text-xs sm:text-sm text-red-100 mt-1 font-semibold">경민대학교 예의관 5층 재난 대응 · 최우선 진입 구역 실시간 연동</p>
+                </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <div class="bg-slate-950/80 px-4 py-2.5 rounded-xl border border-red-500/40 text-center">
+                    <span class="text-[10px] text-slate-400 block uppercase font-bold">건물 내 총 체류자</span>
+                    <span id="ff-stat-total" class="text-base font-black text-white">3명</span>
+                </div>
+                <div class="bg-slate-950/80 px-4 py-2.5 rounded-xl border border-red-500/40 text-center">
+                    <span class="text-[10px] text-rose-300 block uppercase font-bold">최우선 목표 호실</span>
+                    <span id="ff-stat-target" class="text-base font-black text-rose-400">없음</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 bg-slate-900 rounded-2xl p-5 sm:p-6 border border-slate-800 shadow-sm flex flex-col justify-between">
+                <div>
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+                        <div>
+                            <h3 class="text-base font-extrabold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-cube text-blue-400"></i>
+                                <span id="map-mode-title">예의관 5층 2D 공간 평면도</span>
+                            </h3>
+                            <p class="text-xs text-slate-400 mt-0.5">핍디스멘션 AI 공간 변환 엔진 연동 실시간 위치 맵핑</p>
+                        </div>
+                        <div class="inline-flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+                            <button type="button" onclick="setMapMode('2d')" id="map-btn-2d" class="px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth bg-blue-600 text-white shadow-xs cursor-pointer">
+                                📐 2D 평면도
+                            </button>
+                            <button type="button" onclick="runAiTransformAnimation()" id="map-btn-ai" class="px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer">
+                                <i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i> AI 변환 시연
+                            </button>
+                            <button type="button" onclick="setMapMode('3d')" id="map-btn-3d" class="px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white cursor-pointer">
+                                🧊 3D 입체도면
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="ff-map-stage" class="relative w-full h-[380px] bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden flex flex-col items-center justify-center p-4 select-none"></div>
+                </div>
+
+                <div class="mt-5 pt-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+                    <span>💡 소방대장 지침: 3D 입체 투시도에서 각 팀원의 위치 핀과 위험 구역 화재 상황을 입체적으로 확인할 수 있습니다.</span>
+                    <span class="font-mono text-blue-400 font-bold">BIM AI SYNC v2.6</span>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                <div class="bg-slate-900 rounded-2xl p-5 sm:p-6 border border-slate-800 shadow-sm flex flex-col justify-between h-full">
+                    <div>
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="text-base font-extrabold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-triangle-exclamation text-rose-500"></i>
+                                인명 구조 우선순위 브리핑
+                            </h3>
+                            <span class="text-xs font-bold text-rose-400 bg-rose-950 px-2.5 py-1 rounded-lg border border-rose-800">실시간 순위</span>
+                        </div>
+                        <p class="text-xs text-slate-400 mb-5">위험지역에 진입한 대상을 최우선 구조 대상으로 자동 정렬합니다.</p>
+
+                        <div id="ff-priority-list" class="space-y-3"></div>
+                    </div>
+
+                    <div class="mt-6 pt-4 border-t border-slate-800 bg-slate-950 p-4 rounded-xl border border-slate-800/80 space-y-2">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="text-slate-400">소방 관제 채널</span>
+                            <span class="font-mono text-emerald-400 font-bold">ACTIVE (WSS)</span>
+                        </div>
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="text-slate-400">현장 브리핑 동기화</span>
+                            <span class="font-mono text-blue-400 font-bold">0.1s 실시간</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ======================================================================= -->
+    <!-- VIEW 3: 가상현장 시뮬레이터 (3D 디지털 트윈 + 화재감지기 자동 연동)      -->
+    <!-- ======================================================================= -->
+    <main id="view-simulator" class="hidden flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+        <div class="bg-slate-900 rounded-2xl p-5 sm:p-6 border border-slate-800 shadow-sm">
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4">
+                <div>
+                    <h2 class="text-lg font-extrabold text-white">🎮 예의관 5층 3D 디지털 트윈 & 화재감지기 시뮬레이터</h2>
+                    <p class="text-xs text-slate-400 mt-0.5">캐릭터를 이동시키거나 <b class="text-rose-400">복도 발화(불 지르기) [F]</b> 버튼으로 화재감지기가 자동으로 위급상황을 감지하는 시연을 진행하세요.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <button type="button" onclick="igniteHallwayFire()" class="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-md transition-smooth flex items-center gap-2 cursor-pointer">
+                        <i class="fa-solid fa-fire text-amber-300 animate-bounce"></i>
+                        <span>🔥 복도 발화 (불 지르기) [F]</span>
+                    </button>
+                    <button type="button" onclick="extinguishHallwayFire()" class="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold text-xs transition-smooth flex items-center gap-1.5 cursor-pointer">
+                        <i class="fa-solid fa-fire-extinguisher text-blue-400"></i>
+                        <span>🧯 소화 및 정상 복구 [R]</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <div class="lg:col-span-3">
+                    <div id="sim-canvas-container"></div>
+                    <div class="mt-3 py-2.5 px-4 bg-slate-950 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between text-xs text-slate-400">
+                        <span>⌨️ 이동: 방향키 또는 <b>W, A, S, D</b> (또는 바닥 클릭 이동)</span>
+                        <span>🖱️ 시점 회전: 마우스 드래그</span>
+                        <span>🔥 화재 감지기 연동 자동 대피</span>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="bg-slate-950 rounded-2xl p-4 border border-slate-800">
+                        <h3 class="text-xs font-extrabold text-slate-400 uppercase tracking-wider mb-3">조종할 캐릭터 선택</h3>
+                        <div class="grid grid-cols-3 gap-2" id="sim-member-buttons"></div>
+                    </div>
+
+                    <div class="bg-slate-950 rounded-2xl p-4 border border-slate-800 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-xs font-extrabold text-slate-400 uppercase tracking-wider">BLE 비콘 RSSI 실시간 측위</h3>
+                            <span id="sim-active-room-pill" class="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-500/20 text-blue-400">502호 인접</span>
+                        </div>
+                        <div id="sim-rssi-bars" class="space-y-2.5 text-xs"></div>
+                    </div>
+
+                    <div class="bg-slate-950 rounded-2xl p-4 border border-slate-800 text-center">
+                        <span class="text-[11px] font-bold text-slate-400 block mb-2">가상 방향 조작 패드</span>
+                        <div class="grid grid-cols-3 gap-1.5 max-w-[180px] mx-auto">
+                            <div></div>
+                            <button type="button" onclick="simMoveStep(0, -0.8)" class="py-2.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-200 font-bold text-sm cursor-pointer shadow-xs">▲</button>
+                            <div></div>
+                            <button type="button" onclick="simMoveStep(-0.8, 0)" class="py-2.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-200 font-bold text-sm cursor-pointer shadow-xs">◀</button>
+                            <button type="button" onclick="simMoveStep(0, 0.8)" class="py-2.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-200 font-bold text-sm cursor-pointer shadow-xs">▼</button>
+                            <button type="button" onclick="simMoveStep(0.8, 0)" class="py-2.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-200 font-bold text-sm cursor-pointer shadow-xs">▶</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ======================================================================= -->
+    <!-- VIEW 4: 팀원 단말기 (스마트폰 화면)                                    -->
+    <!-- ======================================================================= -->
+    <main id="view-mobile" class="hidden flex-1 max-w-md w-full mx-auto p-4 sm:p-6 flex flex-col">
+        <div id="mobile-emergency-alert" class="hidden mb-3 bg-rose-700 text-white rounded-2xl p-4 shadow-md border border-rose-400 text-center">
+            <h2 class="text-sm sm:text-base font-black">🚨 비상시 모드 발령 중!</h2>
+            <p class="text-xs text-rose-100 mt-0.5">관제실 비상 경보가 활성화되었습니다. 신속히 대피하세요.</p>
+        </div>
+
+        <div id="mobile-danger-alert" class="hidden mb-4 bg-rose-600 text-white rounded-2xl p-4 shadow-lg border-2 border-rose-300 danger-ring text-center">
+            <div class="text-2xl mb-1 animate-bounce">⚠️</div>
+            <h2 class="text-base sm:text-lg font-black tracking-tight">위험지역에 진입했습니다!</h2>
+            <p class="text-xs text-rose-100 mt-1 font-semibold">관제 대시보드에 경보가 울리고 있습니다. 즉시 이동하세요.</p>
+        </div>
+
+        <div class="bg-slate-900 rounded-3xl border border-slate-800 shadow-xl overflow-hidden flex-1 flex flex-col">
+            <div class="bg-slate-950 text-white px-5 py-4 flex items-center justify-between border-b border-slate-800">
+                <div class="flex items-center space-x-3">
+                    <div class="w-9 h-9 rounded-xl border border-slate-700 bg-[#f7f5ee] grid grid-cols-2 grid-rows-2 items-center justify-items-center p-0.5 shrink-0 select-none">
+                        <span class="font-black text-rose-500 text-xs leading-none">여</span>
+                        <span class="font-black text-slate-900 text-xs leading-none">기</span>
+                        <span class="font-black text-slate-900 text-xs leading-none">있</span>
+                        <span class="font-black text-rose-500 text-xs leading-none">소</span>
+                    </div>
+                    <div>
+                        <h2 class="font-extrabold text-sm sm:text-base leading-tight text-white">「여기있소」 팀원 단말기</h2>
+                        <p class="text-[11px] text-slate-400">경민대학교 예의관 5층 위치 선택</p>
+                    </div>
+                </div>
+                <span class="px-2.5 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-full text-[10px] font-bold flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>BLE 송출중
+                </span>
+            </div>
+
+            <div class="p-5 space-y-6 flex-1 bg-slate-900">
+                <div>
+                    <label class="block text-xs font-extrabold text-slate-400 uppercase tracking-wider mb-2.5">1. 사용자 선택</label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button type="button" onclick="selectMember('siwoo')" id="member-btn-siwoo" class="py-3 rounded-xl font-extrabold text-sm border-2 border-blue-500 bg-blue-950 text-blue-300 transition-smooth cursor-pointer">
+                            이시우
+                        </button>
+                        <button type="button" onclick="selectMember('youngjun')" id="member-btn-youngjun" class="py-3 rounded-xl font-extrabold text-sm border border-slate-800 bg-slate-950 text-slate-400 transition-smooth cursor-pointer">
+                            최영준
+                        </button>
+                        <button type="button" onclick="selectMember('yongjun')" id="member-btn-yongjun" class="py-3 rounded-xl font-extrabold text-sm border border-slate-800 bg-slate-950 text-slate-400 transition-smooth cursor-pointer">
+                            이용준
+                        </button>
+                    </div>
+                </div>
+
+                <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-extrabold text-slate-300 flex items-center gap-1.5">
+                            <i class="fa-solid fa-location-dot text-blue-400"></i>
+                            <span>2. 이동할 강의실 선택</span>
+                        </span>
+                        <span id="mobile-status-pill" class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-800">502호 체류 중</span>
+                    </div>
+
+                    <div id="mobile-room-buttons" class="grid grid-cols-2 gap-2.5"></div>
+
+                    <button type="button" onclick="moveMember(null)" id="mobile-exit-btn" class="w-full py-3.5 px-4 rounded-xl font-extrabold text-xs bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800 transition-smooth flex items-center justify-center gap-2 cursor-pointer">
+                        <span>🚪 퇴실 / 대피 완료</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="bg-slate-950 px-5 py-3.5 border-t border-slate-800 text-center">
+                <p class="text-[11px] text-slate-500">강의실을 선택하면 관제 대시보드에 즉시 실시간 반영됩니다.</p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const MQTT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+        const MQTT_TOPIC = 'yeogi_isso/kyungmin_5f/exact_sync_2026_siwoo';
+        const CHANNEL_NAME = 'yeogi_isso_exact_local_channel';
+
+        const ROOMS = [
+            { id: '501', label: '501호' },
+            { id: '502', label: '502호' },
+            { id: '503', label: '503호' },
+            { id: '504', label: '504호' }
+        ];
+
+        const ROOMS_META = {
+            '501': { x: -7.5, z: -2.5 },
+            '502': { x: -2.5, z: -2.5 },
+            '503': { x: 2.5, z: -2.5 },
+            '504': { x: 7.5, z: -2.5 }
+        };
+
+        const MEMBER_KEYS = ['siwoo', 'youngjun', 'yongjun'];
+
+        function createDefaultState() {
+            return {
+                emergencyMode: false,
+                dangerZones: { '501': false, '502': false, '503': false, '504': false },
+                members: {
+                    siwoo: { id: 'siwoo', name: '이시우', dept: '소방안전관리과 · BLE 연동', room: '502', rssi: -56, x: -2.5, z: -2.5 },
+                    youngjun: { id: 'youngjun', name: '최영준', dept: '소방안전관리과 · BLE 연동', room: '502', rssi: -61, x: -2.0, z: -2.0 },
+                    yongjun: { id: 'yongjun', name: '이용준', dept: '소방안전관리과 · BLE 연동', room: '502', rssi: -58, x: -3.0, z: -2.0 }
+                },
+                updatedAt: Date.now()
+            };
+        }
+
+        let appState = createDefaultState();
+        let activeView = 'dashboard';
+        let mapMode = '2d';
+        let isAiScanning = false;
+        let aiScanStepText = '';
+        let ffXrayMode = true;
+        let selectedMemberId = 'siwoo';
+        let isMuted = false;
+        let alarmTimer = null;
+        let audioCtx = null;
+        let mqttClient = null;
+        let broadcastChannel = null;
+
+        function updateSyncStatusPill(state) {
+            const pill = document.getElementById('sync-status-pill');
+            if (!pill) return;
+
+            if (state === 'connected') {
+                pill.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+                pill.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>🟢 실시간 동기화 연결됨';
+            } else if (state === 'reconnecting') {
+                pill.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
+                pill.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>🟡 재연결 중...';
+            } else {
+                pill.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
+                pill.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>🔴 오프라인 모드';
+            }
+        }
+
+        function setMapMode(mode) {
+            isAiScanning = false;
+            mapMode = mode;
+            const titleEl = document.getElementById('map-mode-title');
+            const btn2d = document.getElementById('map-btn-2d');
+            const btnAi = document.getElementById('map-btn-ai');
+            const btn3d = document.getElementById('map-btn-3d');
+            if (mode === '2d') {
+                titleEl.innerText = '예의관 5층 2D 공간 평면도';
+                btn2d.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth bg-blue-600 text-white shadow-xs cursor-pointer';
+                btnAi.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer';
+                btn3d.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white cursor-pointer';
+            } else {
+                titleEl.innerText = '경민대학교 예의관 3D 입체 건축물 모델 (BIM 투시)';
+                btn2d.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white cursor-pointer';
+                btnAi.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer';
+                btn3d.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth bg-blue-600 text-white shadow-xs cursor-pointer';
+            }
+            renderFirefighterView();
+        }
+
+        function setFfCameraPreset(preset) {
+            if (mapMode !== '3d') setMapMode('3d');
+            if (preset === 'quarter') {
+                ffTheta = 0.58;
+                ffPhi = 0.96;
+                ffRadius = 21.5;
+            } else if (preset === 'front') {
+                ffTheta = 0.0;
+                ffPhi = 1.18;
+                ffRadius = 20.5;
+            } else if (preset === 'top') {
+                ffTheta = 0.0;
+                ffPhi = 0.42;
+                ffRadius = 22.0;
+            }
+            updateFfBuildingCamera();
+        }
+
+        function toggleFfXrayMode() {
+            ffXrayMode = !ffXrayMode;
+            const btn = document.getElementById('ff-xray-btn');
+            if (btn) {
+                btn.innerText = ffXrayMode ? '🏢 외벽 투시 ON' : '🧱 건물 외관 보기';
+            }
+            updateFfBuildingMaterials();
+        }
+
+        function runAiTransformAnimation() {
+            if (isAiScanning) return;
+            isAiScanning = true;
+            mapMode = '2d';
+            const titleEl = document.getElementById('map-mode-title');
+            const btn2d = document.getElementById('map-btn-2d');
+            const btnAi = document.getElementById('map-btn-ai');
+            const btn3d = document.getElementById('map-btn-3d');
+
+            titleEl.innerText = '✨ 핍디스멘션 AI 2D→3D 건축물 자동 생성 스캔 중...';
+            btn2d.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white cursor-pointer';
+            btnAi.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth bg-indigo-600 text-white shadow-xs flex items-center gap-1 cursor-pointer animate-pulse';
+            btn3d.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white cursor-pointer';
+
+            aiScanStepText = '1단계: 2D 건축 평면도 외벽·기둥·비상계단 코어 추출 중...';
+            renderFirefighterView();
+
+            window.setTimeout(() => {
+                if (!isAiScanning) return;
+                aiScanStepText = '2단계: 예의관 1~5층 다층 입면 구조 및 창호·옥상 슬래브 생성 중...';
+                const stepEl = document.getElementById('ai-scan-step-label');
+                if (stepEl) stepEl.innerText = aiScanStepText;
+            }, 750);
+
+            window.setTimeout(() => {
+                if (!isAiScanning) return;
+                aiScanStepText = '3단계: 5층 내부 투시 및 BLE 구조 대상자 3D 비콘 매핑 완료!';
+                const stepEl = document.getElementById('ai-scan-step-label');
+                if (stepEl) stepEl.innerText = aiScanStepText;
+            }, 1450);
+
+            window.setTimeout(() => {
+                if (!isAiScanning) return;
+                isAiScanning = false;
+                setMapMode('3d');
+                ffBuildingGrowProgress = 0.05;
+            }, 1950);
+        }
+
+        function applyIncomingState(incoming) {
+            if (!incoming || typeof incoming !== 'object') return;
+            if (!incoming.members || !incoming.dangerZones) return;
+            appState = incoming;
+            renderApp();
+            updateThreeMembersFromState();
+        }
+
+        function initSyncTransport() {
+            try {
+                if ('BroadcastChannel' in window) {
+                    broadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+                    broadcastChannel.onmessage = (event) => {
+                        if (event.data && event.data.type === 'SYNC_STATE') {
+                            applyIncomingState(event.data.payload);
+                        }
+                    };
+                }
+            } catch (err) {}
+
+            try {
+                if (typeof mqtt !== 'undefined') {
+                    mqttClient = mqtt.connect(MQTT_BROKER_URL, {
+                        clientId: 'yeogi_isso_' + Math.random().toString(16).slice(2, 10),
+                        clean: true, connectTimeout: 5000, reconnectPeriod: 2000
+                    });
+                    mqttClient.on('connect', () => { updateSyncStatusPill('connected'); mqttClient.subscribe(MQTT_TOPIC, { qos: 1 }); });
+                    mqttClient.on('reconnect', () => updateSyncStatusPill('reconnecting'));
+                    mqttClient.on('offline', () => updateSyncStatusPill('offline'));
+                    mqttClient.on('message', (topic, message) => {
+                        if (topic === MQTT_TOPIC) {
+                            try { applyIncomingState(JSON.parse(message.toString())); } catch (e) {}
+                        }
+                    });
+                }
+            } catch (err) { updateSyncStatusPill('offline'); }
+        }
+
+        function broadcastState() {
+            appState.updatedAt = Date.now();
+            renderApp();
+            updateThreeMembersFromState();
+            try { if (broadcastChannel) broadcastChannel.postMessage({ type: 'SYNC_STATE', payload: appState }); } catch (e) {}
+            try { if (mqttClient && mqttClient.connected) mqttClient.publish(MQTT_TOPIC, JSON.stringify(appState), { retain: true, qos: 1 }); } catch (e) {}
+        }
+
+        function ensureAudioContext() {
+            try {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContextClass) return null;
+                if (!audioCtx) audioCtx = new AudioContextClass();
+                if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+                return audioCtx;
+            } catch (err) { return null; }
+        }
+
+        ['pointerdown', 'keydown'].forEach((evt) => {
+            window.addEventListener(evt, () => ensureAudioContext(), { passive: true });
+        });
+
+        function playSingleSirenBurst() {
+            if (isMuted) return;
+            const ctx = ensureAudioContext();
+            if (!ctx || ctx.state !== 'running') return;
+            try {
+                const now = ctx.currentTime;
+                [0, 0.28].forEach((offset, idx) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(idx === 0 ? 960 : 760, now + offset);
+                    osc.frequency.exponentialRampToValueAtTime(idx === 0 ? 680 : 540, now + offset + 0.22);
+                    gain.gain.setValueAtTime(0.2, now + offset);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.24);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(now + offset);
+                    osc.stop(now + offset + 0.25);
+                });
+            } catch (err) {}
+        }
+
+        function startAlarmLoop() {
+            if (isMuted) { stopAlarmLoop(); return; }
+            if (alarmTimer !== null) return;
+            playSingleSirenBurst();
+            alarmTimer = window.setInterval(() => {
+                if (isMuted) stopAlarmLoop();
+                else playSingleSirenBurst();
+            }, 800);
+        }
+
+        function stopAlarmLoop() {
+            if (alarmTimer !== null) { clearInterval(alarmTimer); alarmTimer = null; }
+        }
+
+        function switchView(viewName) {
+            ensureAudioContext();
+            activeView = viewName;
+            ['dashboard', 'firefighter', 'simulator', 'mobile'].forEach((v) => {
+                const el = document.getElementById('view-' + v);
+                const tab = document.getElementById('tab-' + v);
+                if (!el || !tab) return;
+                if (v === viewName) {
+                    el.classList.remove('hidden');
+                    tab.className = 'px-3 py-2 rounded-lg text-xs font-extrabold transition-smooth bg-slate-900 text-white shadow-xs flex items-center gap-1.5 cursor-pointer';
+                } else {
+                    el.classList.add('hidden');
+                    tab.className = 'px-3 py-2 rounded-lg text-xs font-extrabold transition-smooth text-slate-400 hover:text-white flex items-center gap-1.5 cursor-pointer';
+                }
+            });
+            if (viewName === 'simulator') {
+                window.setTimeout(() => { initThreeSimulator(); resizeThreeSimulator(); }, 50);
+            }
+            renderApp();
+        }
+
+        function toggleEmergencyMode() {
+            ensureAudioContext();
+            appState.emergencyMode = !appState.emergencyMode;
+            broadcastState();
+        }
+
+        function toggleDangerZone(roomId) {
+            ensureAudioContext();
+            appState.dangerZones[roomId] = !appState.dangerZones[roomId];
+            broadcastState();
+        }
+
+        function selectMember(memberId) {
+            ensureAudioContext();
+            selectedMemberId = memberId;
+            renderMobileView();
+        }
+
+        function moveMember(roomId) {
+            ensureAudioContext();
+            const member = appState.members[selectedMemberId];
+            if (!member) return;
+            member.room = roomId;
+            if (roomId && ROOMS_META[roomId]) {
+                member.x = ROOMS_META[roomId].x + (Math.random() - 0.5) * 0.8;
+                member.z = ROOMS_META[roomId].z + (Math.random() - 0.5) * 0.8;
+                member.rssi = -54 - Math.floor(Math.random() * 10);
+            } else {
+                member.x = 0; member.z = 4.0; member.rssi = -85;
+            }
+            broadcastState();
+        }
+
+        function toggleMuteAlarm() {
+            ensureAudioContext();
+            isMuted = !isMuted;
+            if (isMuted) stopAlarmLoop();
+            renderApp();
+        }
+
+        function resetDemo() {
+            ensureAudioContext();
+            isMuted = false;
+            stopAlarmLoop();
+            extinguishHallwayFire();
+            appState = createDefaultState();
+            broadcastState();
+        }
+
+        function getIntruders() {
+            const list = [];
+            MEMBER_KEYS.forEach((key) => {
+                const m = appState.members[key];
+                if (m && m.room && (appState.dangerZones[m.room] || appState.emergencyMode)) {
+                    list.push({ id: key, name: m.name, room: m.room, emergency: appState.emergencyMode, danger: appState.dangerZones[m.room] });
+                }
+            });
+            return list;
+        }
+
+        function renderApp() {
+            const intruders = getIntruders();
+            const shouldAlarm = intruders.length > 0 || appState.emergencyMode;
+            if (shouldAlarm && !isMuted) startAlarmLoop();
+            else stopAlarmLoop();
+
+            renderDashboardView(intruders);
+            renderFirefighterView();
+            renderMobileView();
+            updateSimulatorSidebar();
+            updateFfBuildingState();
+        }
+
+        function renderDashboardView(intruders) {
+            const bodyTag = document.getElementById('body-tag');
+            const emergencyBtn = document.getElementById('emergency-mode-btn');
+            const sysBanner = document.getElementById('system-status-banner');
+            const sysDot = document.getElementById('system-status-dot');
+            const sysTitle = document.getElementById('system-banner-title');
+            const sysDesc = document.getElementById('system-banner-desc');
+            const sysBadge = document.getElementById('system-banner-badge');
+
+            if (appState.emergencyMode) {
+                bodyTag.className = 'min-h-screen flex flex-col bg-rose-950/40 text-slate-100';
+                emergencyBtn.className = 'px-4 py-2 rounded-xl font-extrabold text-xs shadow-sm transition-smooth bg-rose-600 text-white hover:bg-rose-700 animate-pulse cursor-pointer';
+                emergencyBtn.innerText = '🚨 비상시 모드 (경보 발령)';
+                sysBanner.className = 'bg-rose-900/80 border border-rose-700 rounded-2xl p-5 flex items-center justify-between transition-smooth shadow-sm';
+                sysDot.className = 'w-3.5 h-3.5 bg-rose-500 rounded-full animate-ping shrink-0';
+                sysTitle.className = 'font-extrabold text-white text-sm sm:text-base';
+                sysTitle.innerText = '⚠️ [긴급] 경민대학교 예의관 비상 모드 활성화';
+                sysDesc.className = 'text-xs text-rose-200 mt-0.5 font-medium';
+                sysDesc.innerText = '경민대학교 예의관 5층 전 구역 비상 대피 안내가 전파되었습니다.';
+                sysBadge.className = 'text-xs font-extrabold text-rose-100 bg-rose-600 px-3 py-1.5 rounded-lg shrink-0';
+                sysBadge.innerText = '비상 경보';
+            } else {
+                bodyTag.className = 'min-h-screen flex flex-col bg-slate-950 text-slate-100';
+                emergencyBtn.className = 'px-4 py-2 rounded-xl font-extrabold text-xs shadow-xs transition-smooth bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer';
+                emergencyBtn.innerText = '🟢 평상시 모드 (정상)';
+                sysBanner.className = 'bg-emerald-950/60 border border-emerald-800/80 rounded-2xl p-5 flex items-center justify-between transition-smooth';
+                sysDot.className = 'w-3.5 h-3.5 bg-emerald-500 rounded-full animate-pulse shrink-0';
+                sysTitle.className = 'font-extrabold text-emerald-200 text-sm sm:text-base';
+                sysTitle.innerText = '시스템 정상 작동 중';
+                sysDesc.className = 'text-xs text-emerald-400 mt-0.5';
+                sysDesc.innerText = '경민대학교 예의관 5층 블루투스 스캐너와 모든 단말기가 실시간 동기화 상태입니다.';
+                sysBadge.className = 'text-xs font-extrabold text-emerald-300 bg-emerald-900/80 px-3 py-1.5 rounded-lg shrink-0 border border-emerald-700';
+                sysBadge.innerText = 'LIVE 연결';
+            }
+
+            const intruderBanner = document.getElementById('dash-intruder-banner');
+            const intruderTitle = document.getElementById('dash-intruder-title');
+            const intruderDesc = document.getElementById('dash-intruder-desc');
+            const muteBtn = document.getElementById('mute-alarm-btn');
+
+            if (intruders.length > 0 || appState.emergencyMode) {
+                intruderBanner.classList.remove('hidden');
+                if (appState.emergencyMode) {
+                    intruderTitle.innerText = '🚨 [긴급] 화재 및 위급상황 비상 대피령 발령!';
+                    intruderDesc.innerText = '강의실 내 체류 중인 인원이 감지되었습니다. 즉시 안전계단으로 대피하세요.';
+                } else {
+                    const intruderText = intruders.map((item) => `${item.name}(${item.room}호)`).join(', ');
+                    intruderTitle.innerText = `⚠️ 위험구역 접근 감지! — ${intruderText}`;
+                    intruderDesc.innerText = '위험지역으로 지정된 구역에 인원이 진입했습니다. 즉시 안전 구역으로 이동 조치하세요.';
+                }
+                if (muteBtn) muteBtn.innerHTML = `<span>${isMuted ? '🔇 경보음 켜기' : '🔊 경보음 음소거'}</span>`;
+            } else {
+                intruderBanner.classList.add('hidden');
+            }
+
+            const grid = document.getElementById('floor-rooms-grid');
+            grid.innerHTML = '';
+            ROOMS.forEach((room) => {
+                const isDanger = !!appState.dangerZones[room.id];
+                const roomOccupants = MEMBER_KEYS.map((k) => appState.members[k]).filter((m) => m && m.room === room.id);
+                const count = roomOccupants.length;
+                const isBreached = isDanger && count > 0;
+                const isEmergencyActiveRoom = appState.emergencyMode && count > 0;
+
+                let cardClasses = 'p-4 rounded-2xl border border-slate-800 bg-slate-950 flex flex-col justify-between min-h-[195px] transition-smooth ';
+                let titleClasses = 'font-extrabold text-base text-slate-100';
+                let countClasses = count > 0 ? 'text-2xl font-black text-emerald-400' : 'text-2xl font-black text-slate-600';
+                let badgeHtml = '<span class="text-[11px] font-semibold text-slate-500">강의실</span>';
+
+                if (isEmergencyActiveRoom || isBreached) {
+                    cardClasses = 'p-4 rounded-2xl border-2 border-rose-600 bg-rose-600 text-white flex flex-col justify-between min-h-[195px] transition-smooth shadow-lg danger-ring';
+                    titleClasses = 'font-extrabold text-base text-white';
+                    countClasses = 'text-2xl font-black text-white';
+                    badgeHtml = '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-white text-rose-600 animate-pulse">위급/위험</span>';
+                } else if (isDanger) {
+                    cardClasses = 'p-4 rounded-2xl border-2 border-rose-500 bg-rose-950/40 flex flex-col justify-between min-h-[195px] transition-smooth shadow-xs';
+                    titleClasses = 'font-extrabold text-base text-rose-200';
+                    countClasses = 'text-2xl font-black text-rose-400';
+                    badgeHtml = '<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-600 text-white">위험지역</span>';
+                } else if (count > 0) {
+                    cardClasses = 'p-4 rounded-2xl border-2 border-emerald-500/80 bg-emerald-950/30 flex flex-col justify-between min-h-[195px] transition-smooth shadow-xs';
+                    titleClasses = 'font-extrabold text-base text-emerald-200';
+                    countClasses = 'text-2xl font-black text-emerald-400';
+                    badgeHtml = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-800 text-emerald-100">현재 위치</span>';
+                }
+
+                const occupantBadges = roomOccupants.map((occ) => {
+                    const pillClass = (isBreached || isEmergencyActiveRoom) ? 'px-2 py-0.5 rounded-md text-[11px] font-black bg-white text-rose-700' : 'px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-600 text-white';
+                    return `<span class="${pillClass}">${occ.name}</span>`;
+                }).join('');
+
+                const btnClasses = isDanger
+                    ? (isBreached ? 'w-full py-2 rounded-xl text-xs font-extrabold bg-rose-950 hover:bg-rose-900 text-white border border-rose-300/40 transition-smooth cursor-pointer' : 'w-full py-2 rounded-xl text-xs font-extrabold bg-rose-600 hover:bg-rose-700 text-white transition-smooth cursor-pointer')
+                    : 'w-full py-2 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 transition-smooth cursor-pointer';
+
+                const card = document.createElement('div');
+                card.className = cardClasses;
+                card.innerHTML = `
+                    <div>
+                        <div class="flex items-center justify-between gap-1 mb-2">
+                            <span class="${titleClasses}">${room.label} 강의실</span>
+                            ${badgeHtml}
+                        </div>
+                        <div class="flex flex-wrap gap-1 min-h-[26px] mt-1">${occupantBadges}</div>
+                    </div>
+                    <div class="mt-4 space-y-2.5">
+                        <div class="flex items-baseline justify-between">
+                            <span class="text-[11px] font-semibold ${(isBreached || isEmergencyActiveRoom) ? 'text-rose-100' : 'text-slate-400'}">체류 인원</span>
+                            <span class="${countClasses}">${count}명</span>
+                        </div>
+                        <button type="button" onclick="toggleDangerZone('${room.id}')" class="${btnClasses}">${isDanger ? '위험지역 해제' : '위험지역 지정'}</button>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+
+            const statusList = document.getElementById('occupant-status-list');
+            const summaryPill = document.getElementById('occupant-summary-pill');
+            statusList.innerHTML = '';
+            let presentCount = 0;
+            MEMBER_KEYS.forEach((key) => {
+                const m = appState.members[key];
+                const inDanger = m.room && (!!appState.dangerZones[m.room] || appState.emergencyMode);
+                if (m.room) presentCount++;
+
+                let rowClass = 'p-3.5 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-between';
+                let avatarClass = 'bg-slate-800 text-slate-300';
+                let subText = `${m.dept}`;
+                let statusBadge = '<span class="text-xs font-semibold text-slate-500 bg-slate-900 px-2.5 py-1 rounded-full">퇴실 완료</span>';
+
+                if (inDanger) {
+                    rowClass = 'p-3.5 rounded-xl border-2 border-rose-600 bg-rose-950/60 flex items-center justify-between shadow-xs';
+                    avatarClass = 'bg-rose-600 text-white';
+                    subText = `${m.room}호 체류 중 · ${m.rssi} dBm`;
+                    statusBadge = `<span class="text-xs font-extrabold text-white bg-rose-600 px-2.5 py-1 rounded-full animate-pulse">⚠️ ${m.room}호 (위급/위험)</span>`;
+                } else if (m.room) {
+                    rowClass = 'p-3.5 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-between';
+                    avatarClass = 'bg-slate-800 text-slate-300';
+                    subText = `${m.dept} · ${m.rssi} dBm`;
+                    statusBadge = `<span class="text-xs font-semibold text-emerald-400 bg-emerald-950 px-2.5 py-1 rounded-full border border-emerald-800">${m.room}호 · 안전 체류</span>`;
+                }
+
+                const row = document.createElement('div');
+                row.className = rowClass;
+                row.innerHTML = `
+                    <div class="flex items-center space-x-3">
+                        <div class="w-9 h-9 rounded-full ${avatarClass} flex items-center justify-center font-bold text-sm shrink-0">${m.name.charAt(0)}</div>
+                        <div>
+                            <p class="font-bold text-white text-sm">${m.name}</p>
+                            <p class="text-[11px] text-slate-400">${subText}</p>
+                        </div>
+                    </div>
+                    ${statusBadge}
+                `;
+                statusList.appendChild(row);
+            });
+            summaryPill.innerText = `체류 ${presentCount}명 / 총 3명`;
+        }
+
+        function renderFirefighterView() {
+            const stage = document.getElementById('ff-map-stage');
+            const totalStat = document.getElementById('ff-stat-total');
+            const targetStat = document.getElementById('ff-stat-target');
+            const priorityList = document.getElementById('ff-priority-list');
+
+            let presentCount = 0;
+            let targetRoom = '없음';
+            const riskMap = {};
+            ROOMS.forEach(r => { riskMap[r.id] = 0; });
+            MEMBER_KEYS.forEach(k => {
+                const m = appState.members[k];
+                if (m.room) { presentCount++; riskMap[m.room] = (riskMap[m.room] || 0) + 1; }
+            });
+
+            let maxCount = 0;
+            ROOMS.forEach(r => {
+                if (riskMap[r.id] > maxCount || (riskMap[r.id] > 0 && (appState.dangerZones[r.id] || appState.emergencyMode))) {
+                    maxCount = riskMap[r.id];
+                    targetRoom = `${r.id}호 (${maxCount}명)`;
+                }
+            });
+
+            totalStat.innerText = `${presentCount}명`;
+            targetStat.innerText = targetRoom;
+
+            if (mapMode === '2d' || isAiScanning) {
+                stage.innerHTML = `
+                    <div class="w-full h-full flex flex-col justify-between p-4 bg-slate-900 rounded-xl border ${isAiScanning ? 'border-sky-400 shadow-[0_0_25px_rgba(56,189,248,0.25)]' : 'border-slate-800'} relative overflow-hidden">
+                        ${isAiScanning ? `
+                            <div class="laser-bar z-30"></div>
+                            <div class="absolute inset-0 bg-sky-500/5 pointer-events-none z-20"></div>
+                        ` : ''}
+                        <div class="flex justify-between items-center text-xs font-bold text-slate-400 border-b border-slate-800 pb-2 z-10">
+                            <span>${isAiScanning ? '🛰️ AI 공간 스캐너 레이저 분석 중' : '🏢 예의관 5층 2D 평면도 관제'}</span>
+                            <span class="text-blue-400">${isAiScanning ? 'Z-AXIS EXTRUSION' : 'BLE 스캐너 연동 중'}</span>
+                        </div>
+                        <div class="grid grid-cols-4 gap-3 my-auto z-10">
+                            ${ROOMS.map(r => {
+                                const occs = MEMBER_KEYS.map(k => appState.members[k]).filter(m => m.room === r.id);
+                                const isRisk = appState.dangerZones[r.id] || appState.emergencyMode;
+                                const boxClass = (isRisk && occs.length > 0)
+                                    ? 'bg-rose-600 text-white border-2 border-rose-300 animate-pulse'
+                                    : (isRisk
+                                        ? 'bg-rose-950/70 text-rose-200 border-2 border-rose-500'
+                                        : (occs.length > 0 ? 'bg-emerald-950/80 text-emerald-200 border border-emerald-600' : 'bg-slate-950 text-slate-400 border border-slate-800'));
+                                return `
+                                    <div class="${boxClass} p-3 rounded-xl flex flex-col items-center justify-center text-center min-h-[115px] transition-smooth">
+                                        <span class="text-sm font-extrabold">${r.label}</span>
+                                        <span class="text-xs mt-1 font-bold">${occs.length}명 체류</span>
+                                        <div class="text-[10px] mt-1 font-semibold">${occs.map(o => o.name).join(', ') || '공실'}</div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        ${isAiScanning ? `
+                            <div class="z-30 bg-slate-950/90 border border-sky-500/50 rounded-xl px-3 py-2 flex items-center justify-between text-xs">
+                                <span id="ai-scan-step-label" class="font-bold text-sky-300">${aiScanStepText}</span>
+                                <span class="font-mono text-[10px] text-indigo-300 animate-pulse">SCANNING...</span>
+                            </div>
+                        ` : `
+                            <div class="text-[11px] text-slate-500 text-center z-10">좌측 비상계단 ⇄ 중앙 복도 ⇄ 우측 비상계단</div>
+                        `}
+                    </div>
+                `;
+            } else {
+                const existingCanvas = document.getElementById('ff-building-3d-container');
+                if (!existingCanvas) {
+                    stage.innerHTML = `
+                        <div class="w-full h-full relative rounded-xl border border-blue-500/40 overflow-hidden">
+                            <!-- 상단 3D 건축물 컨트롤 HUD -->
+                            <div class="absolute top-3 left-3 right-3 flex flex-wrap justify-between items-center gap-2 z-30 pointer-events-auto">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-black text-sky-300 bg-slate-950/90 px-3 py-1 rounded-full border border-sky-500/50 shadow-md">🏢 예의관 3D 입체 건축물</span>
+                                    <button type="button" id="ff-xray-btn" onclick="toggleFfXrayMode()" class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold bg-indigo-600 hover:bg-indigo-500 text-white shadow-md cursor-pointer transition-smooth">
+                                        ${ffXrayMode ? '🏢 외벽 투시 ON' : '🧱 건물 외관 보기'}
+                                    </button>
+                                </div>
+                                <div class="inline-flex bg-slate-950/90 p-1 rounded-lg border border-slate-800 gap-1 shadow-md">
+                                    <button type="button" onclick="setFfCameraPreset('quarter')" class="px-2 py-1 rounded text-[10px] font-bold bg-slate-800 hover:bg-blue-600 text-slate-200 hover:text-white transition-smooth cursor-pointer">쿼터뷰</button>
+                                    <button type="button" onclick="setFfCameraPreset('front')" class="px-2 py-1 rounded text-[10px] font-bold bg-slate-800 hover:bg-blue-600 text-slate-200 hover:text-white transition-smooth cursor-pointer">정면입면</button>
+                                    <button type="button" onclick="setFfCameraPreset('top')" class="px-2 py-1 rounded text-[10px] font-bold bg-slate-800 hover:bg-blue-600 text-slate-200 hover:text-white transition-smooth cursor-pointer">항공뷰</button>
+                                </div>
+                            </div>
+
+                            <!-- Three.js 3D 건물 캔버스 -->
+                            <div id="ff-building-3d-container"></div>
+
+                            <!-- 하단 안내 바 -->
+                            <div class="absolute bottom-2.5 left-3 right-3 text-[11px] text-slate-200 text-center z-30 bg-slate-950/85 py-1.5 px-3 rounded-lg border border-slate-800 pointer-events-none">
+                                🖱️ 마우스 드래그: 건물 360° 회전 · 휠: 확대/축소 · 5층(최상층) 내부 구조대상자 위치 실시간 투시
+                            </div>
+                        </div>
+                    `;
+                    ffThreeReady = false;
+                }
+                window.setTimeout(() => {
+                    initFfBuilding3D();
+                    resizeFfBuilding3D();
+                    updateFfBuildingState();
+                }, 20);
+            }
+
+            priorityList.innerHTML = '';
+            const occupantsInRooms = MEMBER_KEYS.map(k => appState.members[k]).filter(m => m.room);
+            if (occupantsInRooms.length === 0) {
+                priorityList.innerHTML = '<div class="p-4 rounded-xl bg-slate-950 text-slate-500 text-xs text-center">현재 건물 내 체류 중인 인원이 없습니다. (모두 대피 완료)</div>';
+                return;
+            }
+
+            // 위험지역 인원을 최상단으로 우선 정렬
+            occupantsInRooms.sort((a, b) => {
+                const aRisk = (appState.dangerZones[a.room] || appState.emergencyMode) ? 1 : 0;
+                const bRisk = (appState.dangerZones[b.room] || appState.emergencyMode) ? 1 : 0;
+                return bRisk - aRisk;
+            });
+
+            occupantsInRooms.forEach((occ, idx) => {
+                const isRisk = appState.dangerZones[occ.room] || appState.emergencyMode;
+                const rowClass = isRisk ? 'p-3.5 rounded-xl border-2 border-rose-600 bg-rose-950/80 flex items-center justify-between shadow-md animate-pulse' : 'p-3.5 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-between';
+                const badge = isRisk ? '<span class="text-xs font-black text-white bg-rose-600 px-2.5 py-1 rounded-full">🔥 최우선 구조대상</span>' : '<span class="text-xs font-bold text-emerald-400 bg-emerald-950 px-2.5 py-1 rounded-full border border-emerald-800">일반 대피중</span>';
+                const div = document.createElement('div');
+                div.className = rowClass;
+                div.innerHTML = `<div class="flex items-center space-x-3"><span class="font-black text-xs text-slate-400">#${idx + 1}</span><div><p class="font-bold text-white text-sm">${occ.name} <span class="text-xs text-slate-400 font-normal">(${occ.room}호)</span></p><p class="text-[11px] text-slate-400">${occ.dept}</p></div></div>${badge}`;
+                priorityList.appendChild(div);
+            });
+        }
+
+        // =========================================================================
+        // 출동 소방대원 전용 Three.js 3D 입체 건축물 (경민대학교 예의관 1~5층 모형)
+        // =========================================================================
+        let ffScene, ffCamera, ffRenderer, ffThreeReady = false;
+        let ffBuildingRoot = null;
+        let ffBuildingGrowProgress = 1.0;
+        let ffTheta = 0.58, ffPhi = 0.96, ffRadius = 21.5;
+        let ffDragActive = false, ffLastX = 0, ffLastY = 0;
+        let ffExteriorWalls = [];
+        let ffRoomBoxes = {};
+        let ffMemberPins = {};
+        let ffRoofSignSprite = null;
+
+        function initFfBuilding3D() {
+            const container = document.getElementById('ff-building-3d-container');
+            if (!container || typeof THREE === 'undefined') return;
+            if (ffThreeReady && container.querySelector('canvas')) return;
+
+            container.innerHTML = '';
+            ffExteriorWalls = [];
+            ffRoomBoxes = {};
+            ffMemberPins = {};
+
+            ffScene = new THREE.Scene();
+            ffScene.background = new THREE.Color(0x060b19);
+            ffScene.fog = new THREE.FogExp2(0x060b19, 0.015);
+
+            const w = container.clientWidth || 720;
+            const h = container.clientHeight || 360;
+            ffCamera = new THREE.PerspectiveCamera(42, w / h, 0.1, 150);
+            updateFfBuildingCamera();
+
+            ffRenderer = new THREE.WebGLRenderer({ antialias: true });
+            ffRenderer.setSize(w, h);
+            ffRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+            container.appendChild(ffRenderer.domElement);
+
+            // 조명 설정 (건축물 입체 음영)
+            ffScene.add(new THREE.AmbientLight(0xcbd5e1, 0.75));
+            const sunLight = new THREE.DirectionalLight(0xffffff, 1.1);
+            sunLight.position.set(14, 26, 18);
+            ffScene.add(sunLight);
+            const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.55);
+            rimLight.position.set(-16, 12, -14);
+            ffScene.add(rimLight);
+
+            // 대지(캠퍼스 지반 & 그리드)
+            const ground = new THREE.Mesh(
+                new THREE.BoxGeometry(34, 0.4, 22),
+                new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.9 })
+            );
+            ground.position.y = -0.2;
+            ffScene.add(ground);
+
+            const gridHelper = new THREE.GridHelper(32, 32, 0x1e3a8a, 0x0f172a);
+            gridHelper.position.y = 0.01;
+            ffScene.add(gridHelper);
+
+            // 건물 본체 그룹 (밑에서 위로 솟아오르는 애니메이션 타겟)
+            ffBuildingRoot = new THREE.Group();
+            ffScene.add(ffBuildingRoot);
+
+            const bWidth = 16.0;
+            const bDepth = 6.6;
+            const floorHeight = 1.35;
+
+            // 1층 ~ 4층 하부 건물 층별 외관 및 창문띠 생성
+            for (let fl = 1; fl <= 4; fl++) {
+                const yBase = (fl - 1) * floorHeight;
+
+                // 콘크리트 외벽 몸체
+                const wallMat = new THREE.MeshStandardMaterial({
+                    color: fl === 1 ? 0x1e293b : 0x334155,
+                    roughness: 0.65,
+                    transparent: true,
+                    opacity: 0.92
+                });
+                const floorBody = new THREE.Mesh(
+                    new THREE.BoxGeometry(bWidth, floorHeight - 0.12, bDepth),
+                    wallMat
+                );
+                floorBody.position.y = yBase + (floorHeight - 0.12) / 2;
+                ffBuildingRoot.add(floorBody);
+                ffExteriorWalls.push(wallMat);
+
+                // 층간 슬래브 띠
+                const slab = new THREE.Mesh(
+                    new THREE.BoxGeometry(bWidth + 0.25, 0.14, bDepth + 0.25),
+                    new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5 })
+                );
+                slab.position.y = yBase + floorHeight - 0.06;
+                ffBuildingRoot.add(slab);
+
+                // 전면/후면 유리창 밴드
+                const winMat = new THREE.MeshStandardMaterial({
+                    color: 0x38bdf8,
+                    emissive: 0x0284c7,
+                    emissiveIntensity: 0.28,
+                    roughness: 0.2,
+                    transparent: true,
+                    opacity: 0.78
+                });
+                const frontWin = new THREE.Mesh(new THREE.BoxGeometry(bWidth - 1.4, 0.52, bDepth + 0.06), winMat);
+                frontWin.position.y = yBase + floorHeight * 0.52;
+                ffBuildingRoot.add(frontWin);
+            }
+
+            // 1층 정면 중앙 현관 포치 (출입구 구조물)
+            const entrance = new THREE.Mesh(
+                new THREE.BoxGeometry(3.2, 1.45, 1.4),
+                new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.4 })
+            );
+            entrance.position.set(0, 0.72, bDepth / 2 + 0.55);
+            ffBuildingRoot.add(entrance);
+
+            // 좌/우측 비상계단 코어 타워 (1층~옥상까지 솟은 계단실)
+            [-bWidth / 2 - 0.9, bWidth / 2 + 0.9].forEach((stairX, idx) => {
+                const stairTower = new THREE.Mesh(
+                    new THREE.BoxGeometry(1.7, floorHeight * 5 + 0.6, bDepth - 0.8),
+                    new THREE.MeshStandardMaterial({
+                        color: 0x1e293b,
+                        roughness: 0.5,
+                        transparent: true,
+                        opacity: 0.85
+                    })
+                );
+                stairTower.position.set(stairX, (floorHeight * 5 + 0.6) / 2, 0);
+                ffBuildingRoot.add(stairTower);
+
+                const stairLabel = createTextSprite(idx === 0 ? '좌측 계단실' : '우측 계단실', '#fbbf24');
+                stairLabel.scale.set(1.9, 0.7, 1);
+                stairLabel.position.set(stairX, floorHeight * 5 + 1.1, 0);
+                ffBuildingRoot.add(stairLabel);
+            });
+
+            // =====================================================================
+            // 5층 (관제 대상 층: Y = 5.4 ~ 6.9) 내부 투시형 강의실 501~504호
+            // =====================================================================
+            const y5Base = 4 * floorHeight;
+            const f5Height = 1.55;
+
+            // 5층 바닥 슬래브
+            const floor5Slab = new THREE.Mesh(
+                new THREE.BoxGeometry(bWidth + 0.2, 0.16, bDepth + 0.2),
+                new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.6 })
+            );
+            floor5Slab.position.y = y5Base;
+            ffBuildingRoot.add(floor5Slab);
+
+            // 5층 중앙 복도 바닥 (전면부 Z = +1.7)
+            const corridor5 = new THREE.Mesh(
+                new THREE.BoxGeometry(bWidth - 0.4, 0.08, 2.2),
+                new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.7 })
+            );
+            corridor5.position.set(0, y5Base + 0.1, 1.8);
+            ffBuildingRoot.add(corridor5);
+
+            // 5층 501 ~ 504호 입체 격실 (후면부 Z = -1.2)
+            const roomXPositions = { '501': -5.7, '502': -1.9, '503': 1.9, '504': 5.7 };
+            ROOMS.forEach((r) => {
+                const rx = roomXPositions[r.id];
+                const rz = -1.15;
+                const roomGroup = new THREE.Group();
+                roomGroup.position.set(rx, y5Base + 0.1, rz);
+
+                // 강의실 바닥 패드 (위험 시 붉은색 발광)
+                const padMat = new THREE.MeshStandardMaterial({
+                    color: 0x1e293b,
+                    emissive: 0x000000,
+                    emissiveIntensity: 0,
+                    roughness: 0.4
+                });
+                const pad = new THREE.Mesh(new THREE.BoxGeometry(3.45, 0.12, 3.6), padMat);
+                pad.position.y = 0.06;
+                roomGroup.add(pad);
+
+                // 강의실 반투명 유리 격벽
+                const glassMat = new THREE.MeshStandardMaterial({
+                    color: 0x38bdf8,
+                    emissive: 0x0284c7,
+                    emissiveIntensity: 0.2,
+                    transparent: true,
+                    opacity: 0.32,
+                    roughness: 0.15
+                });
+                const wallMesh = new THREE.Mesh(new THREE.BoxGeometry(3.45, f5Height - 0.15, 3.6), glassMat);
+                wallMesh.position.y = (f5Height - 0.15) / 2 + 0.08;
+                roomGroup.add(wallMesh);
+
+                // 와이어프레임 윤곽선
+                const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(3.47, f5Height - 0.13, 3.62));
+                const lineMat = new THREE.LineBasicMaterial({ color: 0x7dd3fc });
+                const wire = new THREE.LineSegments(edges, lineMat);
+                wire.position.y = wallMesh.position.y;
+                roomGroup.add(wire);
+
+                // 호실 번호 라벨
+                const roomLabel = createTextSprite(`${r.label}`, '#ffffff');
+                roomLabel.scale.set(1.6, 0.6, 1);
+                roomLabel.position.set(0, f5Height + 0.35, 0);
+                roomGroup.add(roomLabel);
+
+                ffBuildingRoot.add(roomGroup);
+                ffRoomBoxes[r.id] = { padMat, glassMat, lineMat, x: rx, y: y5Base + 0.2, z: rz };
+            });
+
+            // 5층 외벽 유리 커튼월 (투시 모드 토글 대상)
+            const f5OuterMat = new THREE.MeshStandardMaterial({
+                color: 0x60a5fa,
+                transparent: true,
+                opacity: 0.16,
+                roughness: 0.1,
+                depthWrite: false
+            });
+            const f5OuterShell = new THREE.Mesh(new THREE.BoxGeometry(bWidth, f5Height, bDepth), f5OuterMat);
+            f5OuterShell.position.y = y5Base + f5Height / 2;
+            ffBuildingRoot.add(f5OuterShell);
+            ffExteriorWalls.push(f5OuterMat);
+
+            // 옥상 슬래브 & 난간 (투시 시 반투명)
+            const roofMat = new THREE.MeshStandardMaterial({
+                color: 0x334155,
+                roughness: 0.6,
+                transparent: true,
+                opacity: 0.35
+            });
+            const roofSlab = new THREE.Mesh(new THREE.BoxGeometry(bWidth + 0.4, 0.22, bDepth + 0.4), roofMat);
+            roofSlab.position.y = y5Base + f5Height + 0.11;
+            ffBuildingRoot.add(roofSlab);
+            ffExteriorWalls.push(roofMat);
+
+            // 옥상 건물 간판 ("경민대학교 예의관")
+            ffRoofSignSprite = createTextSprite('🏫 경민대학교 예의관 (5F 관제)', '#38bdf8');
+            ffRoofSignSprite.scale.set(4.6, 1.5, 1);
+            ffRoofSignSprite.position.set(0, y5Base + f5Height + 1.35, 0);
+            ffBuildingRoot.add(ffRoofSignSprite);
+
+            // 팀원 3D 위치 마커(인명 구조 비콘 핀) 생성
+            MEMBER_KEYS.forEach((key, idx) => {
+                const m = appState.members[key];
+                const pinGroup = new THREE.Group();
+
+                const bodyColor = key === 'siwoo' ? 0x3b82f6 : (key === 'youngjun' ? 0x818cf8 : 0x10b981);
+                const sphereMat = new THREE.MeshStandardMaterial({
+                    color: bodyColor,
+                    emissive: bodyColor,
+                    emissiveIntensity: 0.6
+                });
+                const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 16, 16), sphereMat);
+                head.position.y = 0.72;
+                pinGroup.add(head);
+
+                const stem = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.06, 0.02, 0.6, 12),
+                    new THREE.MeshBasicMaterial({ color: 0xffffff })
+                );
+                stem.position.y = 0.3;
+                pinGroup.add(stem);
+
+                const ringMat = new THREE.MeshBasicMaterial({
+                    color: 0x38bdf8,
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: 0.85
+                });
+                const ring = new THREE.Mesh(new THREE.RingGeometry(0.32, 0.48, 24), ringMat);
+                ring.rotation.x = -Math.PI / 2;
+                ring.position.y = 0.04;
+                pinGroup.add(ring);
+
+                const nameSprite = createTextSprite(m.name, '#ffffff');
+                nameSprite.scale.set(1.7, 0.65, 1);
+                nameSprite.position.set(0, 1.28, 0);
+                pinGroup.add(nameSprite);
+
+                ffBuildingRoot.add(pinGroup);
+                ffMemberPins[key] = { group: pinGroup, sphereMat, ring, ringMat, offsetIdx: idx };
+            });
+
+            // 마우스 드래그 및 휠 회전 이벤트
+            const dom = ffRenderer.domElement;
+            dom.addEventListener('pointerdown', (e) => {
+                ffDragActive = true;
+                ffLastX = e.clientX;
+                ffLastY = e.clientY;
+            });
+            window.addEventListener('pointermove', (e) => {
+                if (!ffDragActive) return;
+                const dx = e.clientX - ffLastX;
+                const dy = e.clientY - ffLastY;
+                ffTheta -= dx * 0.007;
+                ffPhi = Math.max(0.25, Math.min(1.42, ffPhi - dy * 0.007));
+                ffLastX = e.clientX;
+                ffLastY = e.clientY;
+                updateFfBuildingCamera();
+            });
+            window.addEventListener('pointerup', () => {
+                ffDragActive = false;
+            });
+            dom.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                ffRadius = Math.max(11, Math.min(34, ffRadius + e.deltaY * 0.018));
+                updateFfBuildingCamera();
+            }, { passive: false });
+
+            ffThreeReady = true;
+            updateFfBuildingMaterials();
+            updateFfBuildingState();
+            animateFfBuildingLoop();
+        }
+
+        function updateFfBuildingCamera() {
+            if (!ffCamera) return;
+            const x = ffRadius * Math.sin(ffPhi) * Math.sin(ffTheta);
+            const y = ffRadius * Math.cos(ffPhi) + 2.5;
+            const z = ffRadius * Math.sin(ffPhi) * Math.cos(ffTheta);
+            ffCamera.position.set(x, Math.max(2.0, y), z);
+            ffCamera.lookAt(0, 3.6, 0);
+        }
+
+        function updateFfBuildingMaterials() {
+            if (!ffThreeReady) return;
+            ffExteriorWalls.forEach((mat, idx) => {
+                // 마지막 2개는 5층 외벽과 옥상 슬래브
+                if (idx >= ffExteriorWalls.length - 2) {
+                    mat.opacity = ffXrayMode ? 0.16 : 0.88;
+                } else {
+                    mat.opacity = ffXrayMode ? 0.82 : 0.98;
+                }
+            });
+        }
+
+        function updateFfBuildingState() {
+            if (!ffThreeReady) return;
+            const roomOffsets = { '501': 0, '502': 0, '503': 0, '504': 0 };
+
+            MEMBER_KEYS.forEach((key) => {
+                const m = appState.members[key];
+                const pin = ffMemberPins[key];
+                if (!m || !pin) return;
+
+                if (m.room && ffRoomBoxes[m.room]) {
+                    const rb = ffRoomBoxes[m.room];
+                    const countInRoom = roomOffsets[m.room]++;
+                    const offsetX = (countInRoom - 0.5) * 0.75;
+                    pin.group.visible = true;
+                    pin.group.position.set(rb.x + offsetX, rb.y, rb.z + 0.3);
+
+                    const isDanger = !!appState.dangerZones[m.room] || appState.emergencyMode;
+                    if (isDanger) {
+                        pin.sphereMat.color.setHex(0xff1e42);
+                        pin.sphereMat.emissive.setHex(0xff1e42);
+                        pin.ringMat.color.setHex(0xff1e42);
+                    } else {
+                        const baseCol = key === 'siwoo' ? 0x3b82f6 : (key === 'youngjun' ? 0x818cf8 : 0x10b981);
+                        pin.sphereMat.color.setHex(baseCol);
+                        pin.sphereMat.emissive.setHex(baseCol);
+                        pin.ringMat.color.setHex(0x38bdf8);
+                    }
+                } else {
+                    // 퇴실 시 1층 출입구 외부 대피 구역에 표시
+                    pin.group.visible = true;
+                    pin.group.position.set(-2.0 + pin.offsetIdx * 2.0, 0.1, 5.2);
+                    pin.sphereMat.color.setHex(0x10b981);
+                    pin.sphereMat.emissive.setHex(0x10b981);
+                    pin.ringMat.color.setHex(0x10b981);
+                }
+            });
+        }
+
+        function resizeFfBuilding3D() {
+            if (!ffRenderer || !ffCamera) return;
+            const container = document.getElementById('ff-building-3d-container');
+            if (!container) return;
+            const w = container.clientWidth || 720;
+            const h = container.clientHeight || 360;
+            ffCamera.aspect = w / h;
+            ffCamera.updateProjectionMatrix();
+            ffRenderer.setSize(w, h);
+        }
+
+        function animateFfBuildingLoop() {
+            requestAnimationFrame(animateFfBuildingLoop);
+            if (!ffThreeReady || !ffRenderer || !ffScene || !ffCamera) return;
+            const t = performance.now() * 0.001;
+
+            // AI 변환 완료 직후 건물이 바닥에서 3D로 솟아오르는 효과
+            if (ffBuildingRoot && ffBuildingGrowProgress < 1.0) {
+                ffBuildingGrowProgress = Math.min(1.0, ffBuildingGrowProgress + 0.035);
+                const ease = 1 - Math.pow(1 - ffBuildingGrowProgress, 3);
+                ffBuildingRoot.scale.set(1, Math.max(0.05, ease), 1);
+            }
+
+            // 5층 강의실 위험지역 발광 효과
+            const membersList = Object.values(appState.members);
+            ROOMS.forEach((r) => {
+                const rb = ffRoomBoxes[r.id];
+                if (!rb) return;
+                const isDanger = !!appState.dangerZones[r.id];
+                const hasOcc = membersList.some((m) => m.room === r.id);
+                if (isDanger || (appState.emergencyMode && hasOcc)) {
+                    const pulse = 0.5 + 0.5 * Math.sin(t * 7.5);
+                    rb.padMat.color.setHex(0xe11d48);
+                    rb.padMat.emissive.setHex(0xf43f5e);
+                    rb.padMat.emissiveIntensity = 0.45 + pulse * 0.65;
+                    rb.glassMat.color.setHex(0xf43f5e);
+                    rb.glassMat.emissive.setHex(0xe11d48);
+                    rb.glassMat.emissiveIntensity = 0.35 + pulse * 0.4;
+                    rb.lineMat.color.setHex(0xfecdd3);
+                } else if (hasOcc) {
+                    rb.padMat.color.setHex(0x059669);
+                    rb.padMat.emissive.setHex(0x10b981);
+                    rb.padMat.emissiveIntensity = 0.25;
+                    rb.glassMat.color.setHex(0x34d399);
+                    rb.glassMat.emissive.setHex(0x059669);
+                    rb.glassMat.emissiveIntensity = 0.15;
+                    rb.lineMat.color.setHex(0x6ee7b7);
+                } else {
+                    rb.padMat.color.setHex(0x1e293b);
+                    rb.padMat.emissive.setHex(0x000000);
+                    rb.padMat.emissiveIntensity = 0;
+                    rb.glassMat.color.setHex(0x38bdf8);
+                    rb.glassMat.emissive.setHex(0x0284c7);
+                    rb.glassMat.emissiveIntensity = 0.15;
+                    rb.lineMat.color.setHex(0x7dd3fc);
+                }
+            });
+
+            // 팀원 핀 펄스 링 애니메이션
+            Object.values(ffMemberPins).forEach((pin, idx) => {
+                if (!pin.group.visible) return;
+                const s = 1 + 0.55 * ((t * 1.1 + idx * 0.3) % 1);
+                pin.ring.scale.set(s, s, 1);
+                pin.ringMat.opacity = 0.85 * (1 - ((t * 1.1 + idx * 0.3) % 1));
+            });
+
+            ffRenderer.render(ffScene, ffCamera);
+        }
+
+        function renderMobileView() {
+            const me = appState.members[selectedMemberId];
+            if (!me) return;
+            const inDanger = me.room && (!!appState.dangerZones[me.room] || appState.emergencyMode);
+            const mobileDangerAlert = document.getElementById('mobile-danger-alert');
+            const mobileEmergencyAlert = document.getElementById('mobile-emergency-alert');
+
+            if (appState.emergencyMode) mobileEmergencyAlert.classList.remove('hidden');
+            else mobileEmergencyAlert.classList.add('hidden');
+            if (inDanger) mobileDangerAlert.classList.remove('hidden');
+            else mobileDangerAlert.classList.add('hidden');
+
+            MEMBER_KEYS.forEach((key) => {
+                const btn = document.getElementById(`member-btn-${key}`);
+                if (!btn) return;
+                if (key === selectedMemberId) btn.className = 'py-3 rounded-xl font-extrabold text-sm border-2 border-blue-500 bg-blue-950 text-blue-300 transition-smooth cursor-pointer';
+                else btn.className = 'py-3 rounded-xl font-extrabold text-sm border border-slate-800 bg-slate-950 text-slate-400 hover:bg-slate-800 transition-smooth cursor-pointer';
+            });
+
+            const statusPill = document.getElementById('mobile-status-pill');
+            if (inDanger) {
+                statusPill.className = 'text-[11px] font-black px-2.5 py-1 rounded-lg bg-rose-600 text-white animate-pulse';
+                statusPill.innerText = `${me.room}호 (위급/위험)`;
+            } else if (me.room) {
+                statusPill.className = 'text-[11px] font-extrabold px-2.5 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-800';
+                statusPill.innerText = `${me.room}호 체류 중`;
+            } else {
+                statusPill.className = 'text-[11px] font-bold px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300';
+                statusPill.innerText = '퇴실 / 대피 완료';
+            }
+
+            const roomButtonsContainer = document.getElementById('mobile-room-buttons');
+            roomButtonsContainer.innerHTML = '';
+            ROOMS.forEach((room) => {
+                const isSelected = me.room === room.id;
+                const isRoomDanger = !!appState.dangerZones[room.id] || appState.emergencyMode;
+                let btnClass = 'py-3.5 px-3 rounded-xl font-extrabold text-sm border transition-smooth flex flex-col items-center justify-center gap-1 cursor-pointer ';
+                let subTag = '';
+                if (isSelected && isRoomDanger) {
+                    btnClass += 'border-2 border-rose-600 bg-rose-600 text-white shadow-sm animate-pulse';
+                    subTag = '<span class="text-[10px] font-black bg-white text-rose-600 px-1.5 py-0.2 rounded">위험지역</span>';
+                } else if (isSelected) {
+                    btnClass += 'border-2 border-emerald-600 bg-emerald-600 text-white shadow-xs';
+                    subTag = '<span class="text-[10px] font-bold text-emerald-100">현재 위치</span>';
+                } else if (isRoomDanger) {
+                    btnClass += 'border-2 border-rose-500 bg-rose-950/60 hover:bg-rose-900 text-rose-200';
+                    subTag = '<span class="text-[10px] font-extrabold text-rose-400">위험지역</span>';
+                } else {
+                    btnClass += 'border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-200';
+                }
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = btnClass;
+                btn.onclick = () => moveMember(room.id);
+                btn.innerHTML = `<span>${room.label} 입실</span>${subTag}`;
+                roomButtonsContainer.appendChild(btn);
+            });
+
+            const exitBtn = document.getElementById('mobile-exit-btn');
+            if (!me.room) exitBtn.className = 'w-full py-3.5 px-4 rounded-xl font-extrabold text-xs bg-blue-600 text-white shadow-xs transition-smooth flex items-center justify-center gap-2 cursor-pointer';
+            else exitBtn.className = 'w-full py-3.5 px-4 rounded-xl font-extrabold text-xs bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800 transition-smooth flex items-center justify-center gap-2 cursor-pointer';
+        }
+
+        // Three.js Simulator Logic
+        let scene, camera, renderer, threeReady = false;
+        let floorClickPlane, roomFloorMeshes = {}, roomDangerBorders = {}, beaconRings = [], characterMeshes = {};
+        let hallwayFlames = [], smokeParticles = [], smokeDetectors = [], firePointLights = [];
+        let isHallwayIgnited = false, detectorAnalysisTimer = null, detectorStatusPhase = 'normal';
+        let camTheta = 0.0, camPhi = 0.88, camRadius = 18.5, isDraggingCam = false, dragStartX = 0, dragStartY = 0, dragMoved = false;
+        let tileFloorTexture = null;
+
+        const BEACON_POSITIONS = [
+            { id: '501', name: '비콘 #1 (501호)', x: -7.5, y: 2.6, z: -2.5 },
+            { id: '502', name: '비콘 #2 (502호)', x: -2.5, y: 2.6, z: -2.5 },
+            { id: '503', name: '비콘 #3 (503호)', x: 2.5, y: 2.6, z: -2.5 },
+            { id: '504', name: '비콘 #4 (504호)', x: 7.5, y: 2.6, z: -2.5 }
+        ];
+
+        function createProceduralTileTexture(baseHex, lineHex) {
+            const c = document.createElement('canvas');
+            c.width = 256;
+            c.height = 256;
+            const ctx = c.getContext('2d');
+            ctx.fillStyle = baseHex;
+            ctx.fillRect(0, 0, 256, 256);
+
+            // 미세한 표면 입자 질감
+            for (let i = 0; i < 600; i++) {
+                ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.04)';
+                ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+            }
+
+            // 타일 줄눈 라인
+            ctx.strokeStyle = lineHex;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(1.5, 1.5, 253, 253);
+            ctx.beginPath();
+            ctx.moveTo(128, 0); ctx.lineTo(128, 256);
+            ctx.moveTo(0, 128); ctx.lineTo(256, 128);
+            ctx.stroke();
+
+            const tex = new THREE.CanvasTexture(c);
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            return tex;
+        }
+
+        function initThreeSimulator() {
+            const container = document.getElementById('sim-canvas-container');
+            if (!container || typeof THREE === 'undefined' || threeReady) return;
+            try {
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x090d16);
+                scene.fog = new THREE.FogExp2(0x090d16, 0.016);
+
+                const w = container.clientWidth || 800;
+                const h = container.clientHeight || 520;
+                camera = new THREE.PerspectiveCamera(46, w / h, 0.1, 120);
+                updateCameraOrbit();
+
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(w, h);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                container.appendChild(renderer.domElement);
+
+                // 건축 공간 3점 조명 & 그림자 설정
+                scene.add(new THREE.AmbientLight(0xdbeafe, 0.55));
+                const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x0f172a, 0.45);
+                scene.add(hemiLight);
+
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.95);
+                dirLight.position.set(12, 24, 15);
+                dirLight.castShadow = true;
+                dirLight.shadow.mapSize.width = 2048;
+                dirLight.shadow.mapSize.height = 2048;
+                dirLight.shadow.camera.near = 2;
+                dirLight.shadow.camera.far = 55;
+                dirLight.shadow.camera.left = -16;
+                dirLight.shadow.camera.right = 16;
+                dirLight.shadow.camera.top = 12;
+                dirLight.shadow.camera.bottom = -12;
+                dirLight.shadow.bias = -0.0005;
+                scene.add(dirLight);
+
+                // 5층 건축 슬래브 베이스 및 외곽 테두리 몰딩
+                const baseTex = createProceduralTileTexture('#111827', '#1e293b');
+                baseTex.repeat.set(18, 8);
+                const baseGeo = new THREE.BoxGeometry(27.8, 0.34, 10.8);
+                const baseMesh = new THREE.Mesh(baseGeo, new THREE.MeshStandardMaterial({ map: baseTex, roughness: 0.75, metalness: 0.1 }));
+                baseMesh.position.set(0, -0.17, -0.5);
+                baseMesh.receiveShadow = true;
+                scene.add(baseMesh);
+
+                // 외곽 건축 몰딩 프레임
+                const moldingMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.4, metalness: 0.3 });
+                const northMold = new THREE.Mesh(new THREE.BoxGeometry(27.9, 0.42, 0.18), moldingMat);
+                northMold.position.set(0, 0.05, -5.85);
+                scene.add(northMold);
+                const southMold = new THREE.Mesh(new THREE.BoxGeometry(27.9, 0.42, 0.18), moldingMat);
+                southMold.position.set(0, 0.05, 4.85);
+                scene.add(southMold);
+
+                const clickGeo = new THREE.PlaneGeometry(27, 10);
+                floorClickPlane = new THREE.Mesh(clickGeo, new THREE.MeshBasicMaterial({ visible: false }));
+                floorClickPlane.rotation.x = -Math.PI / 2;
+                floorClickPlane.position.set(0, 0.02, -0.5);
+                scene.add(floorClickPlane);
+
+                tileFloorTexture = createProceduralTileTexture('#1e293b', '#334155');
+                tileFloorTexture.repeat.set(4, 4);
+
+                buildStairZone('LEFT_STAIRS', -11.5, -2.5);
+                buildStairZone('RIGHT_STAIRS', 11.5, -2.5);
+
+                ['501', '502', '503', '504'].forEach((roomId) => {
+                    const meta = ROOMS_META[roomId];
+                    buildClassroom(roomId, meta.x, meta.z);
+                });
+                buildCentralHallway();
+
+                BEACON_POSITIONS.forEach((b) => {
+                    const bg = new THREE.Group();
+                    bg.position.set(b.x, b.y, b.z);
+                    const housing = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.28, 0.32, 0.14, 20),
+                        new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 0.75, roughness: 0.25 })
+                    );
+                    bg.add(housing);
+                    const ring = new THREE.Mesh(new THREE.RingGeometry(0.35, 0.48, 32), new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.7 }));
+                    ring.rotation.x = -Math.PI / 2;
+                    ring.position.y = -0.05;
+                    bg.add(ring);
+                    beaconRings.push(ring);
+                    scene.add(bg);
+                });
+
+                MEMBER_KEYS.forEach((key) => {
+                    const m = appState.members[key];
+                    const cg = createCharacterMesh(key, m);
+                    cg.position.set(m.x, 0, m.z);
+                    characterMeshes[key] = cg;
+                    scene.add(cg);
+                });
+
+                buildHallwayFireAndSmoke();
+                buildHallwaySmokeDetectors();
+                setupSimulatorInteractions(renderer.domElement);
+
+                threeReady = true;
+                updateThreeMembersFromState();
+                animateThreeLoop();
+            } catch (err) {}
+        }
+
+        function updateCameraOrbit() {
+            if (!camera) return;
+            const x = camRadius * Math.sin(camPhi) * Math.sin(camTheta);
+            const y = camRadius * Math.cos(camPhi);
+            const z = camRadius * Math.sin(camPhi) * Math.cos(camTheta);
+            camera.position.set(x, Math.max(1.5, y), z + 0.5);
+            camera.lookAt(0, 0.4, -0.5);
+        }
+
+        function buildStairZone(id, x, z) {
+            const g = new THREE.Group();
+            g.position.set(x, 0, z);
+
+            // 계단실 바닥 플랫폼
+            const floorTex = createProceduralTileTexture('#1e293b', '#475569');
+            floorTex.repeat.set(3, 4);
+            const f = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 4.2), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.7 }));
+            f.position.y = 0.05;
+            f.receiveShadow = true;
+            g.add(f);
+
+            // 6단 입체 층계 스텝
+            const stepMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5 });
+            const nosingMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0xca8a04, emissiveIntensity: 0.25 });
+            for (let s = 0; s < 6; s++) {
+                const stepH = (s + 1) * 0.22;
+                const stepZ = -0.3 - s * 0.28;
+                const stepMesh = new THREE.Mesh(new THREE.BoxGeometry(2.1, stepH, 0.28), stepMat);
+                stepMesh.position.set(0, stepH / 2 + 0.08, stepZ);
+                stepMesh.castShadow = true;
+                stepMesh.receiveShadow = true;
+                g.add(stepMesh);
+
+                // 미끄럼 방지 노란 논슬립 라인
+                const nosing = new THREE.Mesh(new THREE.BoxGeometry(2.12, 0.03, 0.04), nosingMat);
+                nosing.position.set(0, stepH + 0.08, stepZ + 0.13);
+                g.add(nosing);
+            }
+
+            // 양측 스테인리스 안전 난간
+            const railMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.7, roughness: 0.25 });
+            [-1.08, 1.08].forEach((rx) => {
+                const post1 = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.0, 8), railMat);
+                post1.position.set(rx, 0.55, -0.2);
+                g.add(post1);
+
+                const post2 = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.0, 8), railMat);
+                post2.position.set(rx, 1.65, -1.75);
+                g.add(post2);
+
+                const handrail = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.95, 8), railMat);
+                handrail.position.set(rx, 1.1, -0.98);
+                handrail.rotation.x = Math.atan2(1.55, 1.1) - Math.PI / 2;
+                g.add(handrail);
+            });
+
+            // 녹색 발광 EXIT 피난구 유도등 박스
+            const exitGroup = new THREE.Group();
+            exitGroup.position.set(0, 2.25, 1.85);
+            const exitBox = new THREE.Mesh(
+                new THREE.BoxGeometry(0.95, 0.34, 0.14),
+                new THREE.MeshStandardMaterial({ color: 0x064e3b, roughness: 0.3 })
+            );
+            exitGroup.add(exitBox);
+
+            const exitGlow = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.86, 0.26),
+                new THREE.MeshBasicMaterial({ color: 0x10b981 })
+            );
+            exitGlow.position.z = 0.075;
+            exitGroup.add(exitGlow);
+
+            const exitText = createTextSprite('EXIT 피난구', '#ecfdf5');
+            exitText.scale.set(1.15, 0.42, 1);
+            exitText.position.set(0, 0, 0.09);
+            exitGroup.add(exitText);
+            g.add(exitGroup);
+
+            const l = createTextSprite(id === 'LEFT_STAIRS' ? '좌측 비상계단' : '우측 비상계단', '#94a3b8');
+            l.position.set(0, 2.75, 0);
+            g.add(l);
+            scene.add(g);
+        }
+
+        function buildClassroom(roomId, x, z) {
+            const g = new THREE.Group();
+            g.position.set(x, 0, z);
+
+            // 강의실 타일 바닥
+            const fMat = new THREE.MeshStandardMaterial({ map: tileFloorTexture, color: 0x94a3b8, roughness: 0.65 });
+            const f = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.1, 4.2), fMat);
+            f.position.y = 0.05;
+            f.receiveShadow = true;
+            g.add(f);
+            roomFloorMeshes[roomId] = f;
+
+            // 위험구역 경고 바닥 테두리
+            const b = new THREE.Mesh(new THREE.BoxGeometry(4.28, 0.14, 4.28), new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0 }));
+            b.position.y = 0.06;
+            g.add(b);
+            roomDangerBorders[roomId] = b;
+
+            // 외벽 및 상단 마감 몰딩
+            const wm = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.55, transparent: true, opacity: 0.42 });
+            const capMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.4, metalness: 0.2 });
+
+            const bw = new THREE.Mesh(new THREE.BoxGeometry(4.2, 2.2, 0.14), wm); bw.position.set(0, 1.1, -2.05); bw.castShadow = true; g.add(bw);
+            const bwCap = new THREE.Mesh(new THREE.BoxGeometry(4.26, 0.08, 0.2), capMat); bwCap.position.set(0, 2.22, -2.05); g.add(bwCap);
+
+            const lw = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.2, 4.2), wm); lw.position.set(-2.05, 1.1, 0); lw.castShadow = true; g.add(lw);
+            const lwCap = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.08, 4.26), capMat); lwCap.position.set(-2.05, 2.22, 0); g.add(lwCap);
+
+            const rw = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.2, 4.2), wm); rw.position.set(2.05, 1.1, 0); rw.castShadow = true; g.add(rw);
+            const rwCap = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.08, 4.26), capMat); rwCap.position.set(2.05, 2.22, 0); g.add(rwCap);
+
+            // 복도 쪽 전면 벽체 (출입문 개구부 + 반투명 유리창)
+            const frontLeftWall = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2, 0.14), wm);
+            frontLeftWall.position.set(-1.5, 1.1, 2.05);
+            g.add(frontLeftWall);
+
+            // 유리창 프레임 + 반투명 창유리
+            const winBottomWall = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.85, 0.14), wm);
+            winBottomWall.position.set(0.0, 0.425, 2.05);
+            g.add(winBottomWall);
+
+            const glassPane = new THREE.Mesh(
+                new THREE.BoxGeometry(1.75, 1.15, 0.04),
+                new THREE.MeshStandardMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.22, roughness: 0.1 })
+            );
+            glassPane.position.set(0.0, 1.45, 2.05);
+            g.add(glassPane);
+
+            // 출입문 문틀 (우측 개구부)
+            const doorFrameMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.4 });
+            const doorHeader = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.25, 0.18), doorFrameMat);
+            doorHeader.position.set(1.48, 2.08, 2.05);
+            g.add(doorHeader);
+            const doorJamb = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.2, 0.18), doorFrameMat);
+            doorJamb.position.set(0.92, 1.1, 2.05);
+            g.add(doorJamb);
+
+            // 전면 벽 화이트보드 (칠판)
+            const boardFrame = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.95, 0.06), new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.5 }));
+            boardFrame.position.set(0, 1.25, -1.95);
+            g.add(boardFrame);
+            const boardSurface = new THREE.Mesh(new THREE.BoxGeometry(2.18, 0.84, 0.07), new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25 }));
+            boardSurface.position.set(0, 1.25, -1.94);
+            g.add(boardSurface);
+
+            // 교탁
+            const podium = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.72, 0.42), new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5 }));
+            podium.position.set(-1.15, 0.42, -1.35);
+            podium.castShadow = true;
+            podium.receiveShadow = true;
+            g.add(podium);
+
+            // 학생용 책상 & 의자 세트 4조 (2x2 배치)
+            const deskTopMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.45 });
+            const legMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.6, roughness: 0.4 });
+            const chairMat = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.6 });
+
+            [[-0.85, -0.25], [0.85, -0.25], [-0.85, 0.85], [0.85, 0.85]].forEach(([dx, dz]) => {
+                const deskGroup = new THREE.Group();
+                deskGroup.position.set(dx, 0.08, dz);
+
+                const top = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.06, 0.52), deskTopMat);
+                top.position.y = 0.54;
+                top.castShadow = true;
+                top.receiveShadow = true;
+                deskGroup.add(top);
+
+                [[-0.46, -0.2], [0.46, -0.2], [-0.46, 0.2], [0.46, 0.2]].forEach(([lx, lz]) => {
+                    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.52, 8), legMat);
+                    leg.position.set(lx, 0.26, lz);
+                    deskGroup.add(leg);
+                });
+
+                // 의자 좌판 & 등받이
+                const seat = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.05, 0.4), chairMat);
+                seat.position.set(0, 0.34, 0.36);
+                seat.castShadow = true;
+                deskGroup.add(seat);
+
+                const back = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, 0.05), chairMat);
+                back.position.set(0, 0.52, 0.54);
+                back.castShadow = true;
+                deskGroup.add(back);
+
+                g.add(deskGroup);
+            });
+
+            const l = createTextSprite(`${roomId}호`, '#f8fafc');
+            l.position.set(0, 2.55, 0);
+            g.add(l);
+            scene.add(g);
+        }
+
+        function buildCentralHallway() {
+            const g = new THREE.Group();
+            g.position.set(0, 0, 2.3);
+
+            // 복도 타일 바닥
+            const hallTex = createProceduralTileTexture('#0f172a', '#1e293b');
+            hallTex.repeat.set(16, 3);
+            const f = new THREE.Mesh(new THREE.BoxGeometry(25.0, 0.08, 3.8), new THREE.MeshStandardMaterial({ map: hallTex, roughness: 0.65 }));
+            f.position.y = 0.04;
+            f.receiveShadow = true;
+            g.add(f);
+
+            // 복도 중앙 안전 유도 라인
+            const centerStripe = new THREE.Mesh(
+                new THREE.PlaneGeometry(24.0, 0.12),
+                new THREE.MeshBasicMaterial({ color: 0x1e293b })
+            );
+            centerStripe.rotation.x = -Math.PI / 2;
+            centerStripe.position.y = 0.085;
+            g.add(centerStripe);
+
+            // 천장 LED 조명 바 스트립 (4구간)
+            const ledBarMat = new THREE.MeshStandardMaterial({ color: 0xe0f2fe, emissive: 0x38bdf8, emissiveIntensity: 0.75 });
+            [-8.5, -2.8, 2.8, 8.5].forEach((lx) => {
+                const fixture = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.06, 0.24), ledBarMat);
+                fixture.position.set(lx, 2.82, 0);
+                g.add(fixture);
+            });
+
+            // 옥내소화전함 2개소 (복도 전면 난간 벽부형 캐비닛)
+            [-5.0, 5.0].forEach((hx) => {
+                const hydrantGroup = new THREE.Group();
+                hydrantGroup.position.set(hx, 0.78, 1.78);
+
+                const cabinet = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.68, 1.15, 0.22),
+                    new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.35, metalness: 0.2 })
+                );
+                cabinet.castShadow = true;
+                hydrantGroup.add(cabinet);
+
+                // 상단 경종(벨) 램프
+                const bell = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.08, 12, 12),
+                    new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xeab308, emissiveIntensity: 0.6 })
+                );
+                bell.position.set(0, 0.42, -0.12);
+                hydrantGroup.add(bell);
+
+                // 관창 호스 창
+                const glassDoor = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.46, 0.52, 0.04),
+                    new THREE.MeshStandardMaterial({ color: 0xfca5a5, roughness: 0.2 })
+                );
+                glassDoor.position.set(0, -0.08, -0.1);
+                hydrantGroup.add(glassDoor);
+
+                g.add(hydrantGroup);
+            });
+
+            const l = createTextSprite('중앙 복도', '#64748b');
+            l.position.set(0, 2.25, 0);
+            g.add(l);
+            scene.add(g);
+        }
+
+        function createTextSprite(message, fontColor) {
+            const c = document.createElement('canvas'); c.width = 256; c.height = 96;
+            const ctx = c.getContext('2d'); ctx.clearRect(0, 0, 256, 96);
+            ctx.fillStyle = fontColor || '#ffffff'; ctx.font = 'bold 34px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(message, 128, 48);
+            const tex = new THREE.CanvasTexture(c);
+            const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+            spr.scale.set(1.8, 0.68, 1);
+            return spr;
+        }
+
+        function createCharacterMesh(key, m) {
+            const g = new THREE.Group();
+            const bodyColorHex = key === 'siwoo' ? 0x3b82f6 : (key === 'youngjun' ? 0x6366f1 : 0x10b981);
+            const pantsColorHex = 0x1e293b;
+            const skinColorHex = 0xfde68a;
+            const hairColorHex = 0x0f172a;
+
+            // 휴머노이드 바디 피벗 (회전 대상)
+            const rig = new THREE.Group();
+            rig.name = 'charRig';
+
+            const pantsMat = new THREE.MeshStandardMaterial({ color: pantsColorHex, roughness: 0.7 });
+            const shirtMat = new THREE.MeshStandardMaterial({ color: bodyColorHex, roughness: 0.45 });
+            const skinMat = new THREE.MeshStandardMaterial({ color: skinColorHex, roughness: 0.4 });
+            const hairMat = new THREE.MeshStandardMaterial({ color: hairColorHex, roughness: 0.8 });
+
+            // 좌/우 다리
+            [-0.09, 0.09].forEach((lx) => {
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.055, 0.36, 12), pantsMat);
+                leg.position.set(lx, 0.2, 0);
+                leg.castShadow = true;
+                rig.add(leg);
+            });
+
+            // 상체 토르소
+            const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.14, 0.42, 16), shirtMat);
+            torso.position.y = 0.58;
+            torso.castShadow = true;
+            rig.add(torso);
+
+            // 좌/우 팔
+            [-0.21, 0.21].forEach((ax) => {
+                const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.048, 0.042, 0.36, 10), shirtMat);
+                arm.position.set(ax, 0.57, 0);
+                arm.rotation.z = ax < 0 ? 0.12 : -0.12;
+                arm.castShadow = true;
+                rig.add(arm);
+            });
+
+            // 머리 & 헤어 캡
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.155, 18, 18), skinMat);
+            head.position.y = 0.94;
+            head.castShadow = true;
+            rig.add(head);
+
+            const hair = new THREE.Mesh(
+                new THREE.SphereGeometry(0.162, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.56),
+                hairMat
+            );
+            hair.position.y = 0.95;
+            rig.add(hair);
+
+            g.add(rig);
+
+            // 발밑 선택 하이라이트 링
+            const selRing = new THREE.Mesh(
+                new THREE.RingGeometry(0.28, 0.38, 28),
+                new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.85 })
+            );
+            selRing.rotation.x = -Math.PI / 2;
+            selRing.position.y = 0.03;
+            selRing.name = 'selRing';
+            g.add(selRing);
+
+            // 이름표 스프라이트
+            const nt = createTextSprite(m.name, '#ffffff');
+            nt.position.set(0, 1.42, 0);
+            g.add(nt);
+
+            return g;
+        }
+
+        function buildHallwayFireAndSmoke() {
+            hallwayFlames = []; smokeParticles = []; firePointLights = [];
+            const outerGeo = new THREE.ConeGeometry(0.38, 0.95, 12);
+            const midGeo = new THREE.ConeGeometry(0.24, 0.68, 10);
+            const coreGeo = new THREE.ConeGeometry(0.13, 0.42, 8);
+
+            const outerMat = new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.88 });
+            const midMat = new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.92 });
+            const coreMat = new THREE.MeshBasicMaterial({ color: 0xfef9c3, transparent: true, opacity: 0.96 });
+
+            [-6, -2, 2, 6].forEach((xPos, idx) => {
+                const flameGroup = new THREE.Group();
+                flameGroup.position.set(xPos, 0.08, 2.3);
+                flameGroup.visible = false;
+
+                const outer = new THREE.Mesh(outerGeo, outerMat);
+                outer.position.y = 0.47;
+                flameGroup.add(outer);
+
+                const mid = new THREE.Mesh(midGeo, midMat);
+                mid.position.y = 0.34;
+                flameGroup.add(mid);
+
+                const core = new THREE.Mesh(coreGeo, coreMat);
+                core.position.y = 0.21;
+                flameGroup.add(core);
+
+                scene.add(flameGroup);
+                hallwayFlames.push({ group: flameGroup, outer, mid, core, phase: idx * 1.5 });
+            });
+
+            // 복도 주변 벽과 바닥에 따뜻한 화염빛을 반사하는 포인트 라이트 2개
+            [-4, 4].forEach((lx, idx) => {
+                const pLight = new THREE.PointLight(0xff5a1f, 0, 11);
+                pLight.position.set(lx, 1.35, 2.3);
+                scene.add(pLight);
+                firePointLights.push({ light: pLight, phase: idx * 2.1 });
+            });
+
+            const sg = new THREE.SphereGeometry(0.28, 10, 10);
+            for (let i = 0; i < 22; i++) {
+                const sm = new THREE.MeshBasicMaterial({ color: 0x475569, transparent: true, opacity: 0.55 });
+                const mesh = new THREE.Mesh(sg, sm);
+                const xP = (Math.random() - 0.5) * 20, zP = 1.8 + Math.random() * 1.2, yP = 0.35 + Math.random() * 2.2;
+                mesh.position.set(xP, yP, zP); mesh.visible = false;
+                scene.add(mesh); smokeParticles.push({ mesh: mesh, baseX: xP, speed: 0.012 + Math.random() * 0.015, phase: Math.random() * 6.28 });
+            }
+        }
+
+        function buildHallwaySmokeDetectors() {
+            smokeDetectors = [];
+            [-4.5, 4.5].forEach((xPos, idx) => {
+                const dg = new THREE.Group(); dg.position.set(xPos, 2.65, 2.3);
+                dg.add(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.08, 16), new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 })));
+                const lm = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+                const led = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 12), lm); led.position.y = -0.05; dg.add(led);
+                const wr = new THREE.Mesh(new THREE.RingGeometry(0.2, 0.32, 16), new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide, transparent: true, opacity: 0 }));
+                wr.rotation.x = -Math.PI / 2; wr.position.y = -0.06; dg.add(wr);
+                scene.add(dg); smokeDetectors.push({ group: dg, ledMat: lm, waveRing: wr, phase: idx * 1.8 });
+            });
+        }
+
+        function setupSimulatorInteractions(domElement) {
+            domElement.addEventListener('pointerdown', (e) => {
+                isDraggingCam = true; dragStartX = e.clientX; dragStartY = e.clientY; dragMoved = false;
+            });
+            window.addEventListener('pointermove', (e) => {
+                if (!isDraggingCam) return;
+                const dx = e.clientX - dragStartX, dy = e.clientY - dragStartY;
+                if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
+                camTheta -= dx * 0.005; camPhi = Math.max(0.15, Math.min(1.48, camPhi - dy * 0.005));
+                dragStartX = e.clientX; dragStartY = e.clientY; updateCameraOrbit();
+            });
+            window.addEventListener('pointerup', (e) => {
+                if (!isDraggingCam) return;
+                isDraggingCam = false;
+                if (!dragMoved && floorClickPlane) {
+                    const rect = domElement.getBoundingClientRect();
+                    const mouse = new THREE.Vector2();
+                    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                    const ray = new THREE.Raycaster(); ray.setFromCamera(mouse, camera);
+                    const intersects = ray.intersectObject(floorClickPlane);
+                    if (intersects.length > 0) {
+                        const pt = intersects[0].point;
+                        setSimCharacterPosition(selectedMemberId, pt.x, pt.z);
+                    }
+                }
+            });
+            domElement.addEventListener('wheel', (e) => {
+                e.preventDefault(); camRadius = Math.max(8, Math.min(32, camRadius + e.deltaY * 0.02)); updateCameraOrbit();
+            }, { passive: false });
+        }
+
+        function resizeThreeSimulator() {
+            if (!renderer || !camera) return;
+            const container = document.getElementById('sim-canvas-container');
+            if (!container) return;
+            const w = container.clientWidth || 800, h = container.clientHeight || 520;
+            camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h);
+        }
+
+        function setSimCharacterPosition(memberId, x, z) {
+            const m = appState.members[memberId];
+            if (!m) return;
+            m.x = Math.max(-12, Math.min(12, x));
+            m.z = Math.max(-4.5, Math.min(4.0, z));
+            let detectedRoom = null;
+            for (const rId of ['501', '502', '503', '504']) {
+                const meta = ROOMS_META[rId];
+                if (Math.abs(m.x - meta.x) < 2.1 && Math.abs(m.z - meta.z) < 2.1) { detectedRoom = rId; break; }
+            }
+            m.room = detectedRoom;
+            m.rssi = detectedRoom ? (-52 - Math.floor(Math.random() * 8)) : (-78 - Math.floor(Math.random() * 12));
+            broadcastState();
+        }
+
+        function simMoveStep(dx, dz) {
+            const m = appState.members[selectedMemberId];
+            if (!m) return;
+            setSimCharacterPosition(selectedMemberId, (m.x || 0) + dx, (m.z || 0) + dz);
+        }
+
+        function updateThreeMembersFromState() {
+            if (!threeReady) return;
+            MEMBER_KEYS.forEach((key) => {
+                const m = appState.members[key];
+                const mesh = characterMeshes[key];
+                if (m && mesh) {
+                    const targetX = m.x || 0;
+                    const targetZ = m.z || 0;
+                    const dx = targetX - mesh.position.x;
+                    const dz = targetZ - mesh.position.z;
+                    if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) {
+                        const rig = mesh.getObjectByName('charRig');
+                        if (rig) rig.rotation.y = Math.atan2(dx, dz);
+                    }
+                    mesh.position.set(targetX, 0, targetZ);
+                }
+            });
+            updateSimulatorSidebar();
+        }
+
+        function updateSimulatorSidebar() {
+            const memberBtnsContainer = document.getElementById('sim-member-buttons');
+            const rssiBarsContainer = document.getElementById('sim-rssi-bars');
+            const activeRoomPill = document.getElementById('sim-active-room-pill');
+            if (!memberBtnsContainer || !rssiBarsContainer) return;
+
+            memberBtnsContainer.innerHTML = '';
+            MEMBER_KEYS.forEach((key) => {
+                const m = appState.members[key];
+                const isSel = key === selectedMemberId;
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = isSel ? 'py-2 rounded-xl font-extrabold text-xs bg-blue-600 text-white shadow-xs cursor-pointer' : 'py-2 rounded-xl font-bold text-xs bg-slate-900 text-slate-400 hover:text-white border border-slate-800 cursor-pointer';
+                btn.innerText = m.name;
+                btn.onclick = () => { selectedMemberId = key; updateSimulatorSidebar(); };
+                memberBtnsContainer.appendChild(btn);
+            });
+
+            const currentMem = appState.members[selectedMemberId];
+            if (currentMem && currentMem.room) {
+                activeRoomPill.innerText = `${currentMem.room}호 인접`;
+                activeRoomPill.className = 'text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400';
+            } else {
+                activeRoomPill.innerText = '중앙 복도 위치';
+                activeRoomPill.className = 'text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-400';
+            }
+
+            rssiBarsContainer.innerHTML = '';
+            BEACON_POSITIONS.forEach((b) => {
+                let dist = 3.5;
+                if (currentMem) {
+                    const dx = currentMem.x - b.x, dz = currentMem.z - b.z;
+                    dist = Math.sqrt(dx * dx + dz * dz) + 1.2;
+                }
+                const estRssi = Math.max(-95, Math.min(-45, Math.round(-50 - dist * 4.5)));
+                const pct = Math.max(10, Math.min(100, Math.round(((estRssi + 95) / 50) * 100)));
+                const div = document.createElement('div');
+                div.innerHTML = `<div class="flex justify-between text-[11px] text-slate-400 mb-1"><span>${b.name}</span><span class="font-mono font-bold text-slate-200">${estRssi} dBm</span></div><div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-800"><div class="bg-blue-500 h-full transition-all duration-300" style="width: ${pct}%"></div></div>`;
+                rssiBarsContainer.appendChild(div);
+            });
+        }
+
+        function igniteHallwayFire() {
+            ensureAudioContext();
+            isHallwayIgnited = true;
+            detectorStatusPhase = 'analyzing';
+            const container = document.getElementById('sim-canvas-container');
+            if (container && !document.getElementById('fire-toast')) {
+                const toast = document.createElement('div');
+                toast.id = 'fire-toast';
+                toast.className = 'absolute top-4 left-1/2 transform -translate-x-1/2 bg-rose-600 text-white px-5 py-2.5 rounded-2xl shadow-2xl text-xs font-black z-40 border-2 border-white animate-pulse flex items-center gap-2';
+                toast.innerHTML = '<i class="fa-solid fa-fire text-amber-300"></i> <span>💨 복도 발화 발생 — 천장 연기/열 감지기 분석 중...</span>';
+                container.appendChild(toast);
+            }
+            if (detectorAnalysisTimer) clearTimeout(detectorAnalysisTimer);
+            detectorAnalysisTimer = window.setTimeout(() => {
+                detectorStatusPhase = 'triggered';
+                appState.emergencyMode = true;
+                broadcastState();
+                const toast = document.getElementById('fire-toast');
+                if (toast) {
+                    toast.className = 'absolute top-4 left-1/2 transform -translate-x-1/2 bg-rose-700 text-white px-5 py-2.5 rounded-2xl shadow-2xl text-xs font-black z-40 border-2 border-amber-300 animate-bounce flex items-center gap-2';
+                    toast.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-amber-300"></i> <span>🚨 [화재감지기 작동] 중앙 복도 연기/열 감지 ➔ 자동 비상시 모드 전환!</span>';
+                }
+            }, 1500);
+        }
+
+        function extinguishHallwayFire() {
+            ensureAudioContext();
+            isHallwayIgnited = false;
+            detectorStatusPhase = 'normal';
+            if (detectorAnalysisTimer) { clearTimeout(detectorAnalysisTimer); detectorAnalysisTimer = null; }
+            appState.emergencyMode = false;
+            broadcastState();
+            const toast = document.getElementById('fire-toast');
+            if (toast) toast.remove();
+        }
+
+        function animateThreeLoop() {
+            requestAnimationFrame(animateThreeLoop);
+            if (!threeReady || !renderer || !scene || !camera) return;
+            const t = performance.now() * 0.001;
+
+            beaconRings.forEach((ring, idx) => {
+                const s = 1 + 0.65 * ((t * 0.9 + idx * 0.25) % 1);
+                ring.scale.set(s, s, 1);
+                ring.material.opacity = 0.75 * (1 - ((t * 0.9 + idx * 0.25) % 1));
+            });
+
+            ['501', '502', '503', '504'].forEach((roomId) => {
+                const border = roomDangerBorders[roomId];
+                if (!border) return;
+                if (appState.dangerZones[roomId]) border.material.opacity = 0.5 + 0.5 * Math.sin(t * 6);
+                else border.material.opacity = 0;
+            });
+
+            const showHallwayFire = isHallwayIgnited || appState.emergencyMode;
+            hallwayFlames.forEach((f) => {
+                f.group.visible = showHallwayFire;
+                if (showHallwayFire) {
+                    const flicker = 0.85 + 0.28 * Math.sin(t * 14 + f.phase);
+                    f.group.scale.set(flicker, 0.85 + 0.35 * Math.cos(t * 11 + f.phase), flicker);
+                    if (f.mid) f.mid.rotation.y = t * 5 + f.phase;
+                    if (f.core) f.core.scale.y = 0.8 + 0.4 * Math.sin(t * 19 + f.phase);
+                }
+            });
+
+            firePointLights.forEach((fp) => {
+                if (showHallwayFire) {
+                    fp.light.intensity = 2.2 + 0.95 * Math.sin(t * 16 + fp.phase);
+                } else {
+                    fp.light.intensity = 0;
+                }
+            });
+
+            // 선택된 캐릭터 발밑 링 하이라이트 업데이트
+            MEMBER_KEYS.forEach((key) => {
+                const mesh = characterMeshes[key];
+                if (!mesh) return;
+                const ring = mesh.getObjectByName('selRing');
+                if (!ring) return;
+                if (key === selectedMemberId) {
+                    ring.visible = true;
+                    const s = 1 + 0.14 * Math.sin(t * 6);
+                    ring.scale.set(s, s, 1);
+                } else {
+                    ring.visible = false;
+                }
+            });
+
+            smokeParticles.forEach((sp) => {
+                sp.mesh.visible = showHallwayFire;
+                if (showHallwayFire) {
+                    sp.mesh.position.y += sp.speed;
+                    sp.mesh.position.x = sp.baseX + Math.sin(t * 1.8 + sp.phase) * 0.25;
+                    if (sp.mesh.position.y > 3.6) sp.mesh.position.y = 0.35;
+                    const lifeRatio = (sp.mesh.position.y - 0.35) / 3.25;
+                    const s = 0.7 + lifeRatio * 1.3;
+                    sp.mesh.scale.set(s, s, s);
+                    sp.mesh.material.opacity = Math.max(0.05, 0.72 * (1 - lifeRatio));
+                }
+            });
+
+            smokeDetectors.forEach((det) => {
+                if (appState.emergencyMode || detectorStatusPhase === 'triggered') {
+                    const blink = Math.sin(t * 18 + det.phase) > 0;
+                    det.ledMat.color.setHex(blink ? 0xff1e1e : 0x450a0a);
+                    const waveScale = 1 + 1.8 * ((t * 1.4 + det.phase * 0.2) % 1);
+                    det.waveRing.scale.set(waveScale, waveScale, 1);
+                    det.waveRing.material.opacity = 0.85 * (1 - ((t * 1.4 + det.phase * 0.2) % 1));
+                } else if (detectorStatusPhase === 'analyzing') {
+                    const blink = Math.sin(t * 10 + det.phase) > 0;
+                    det.ledMat.color.setHex(blink ? 0xf59e0b : 0x78350f);
+                    det.waveRing.material.opacity = 0;
+                } else {
+                    det.ledMat.color.setHex(0x10b981);
+                    det.waveRing.material.opacity = 0;
+                }
+            });
+
+            const membersList = Object.values(appState.members);
+            ['501', '502', '503', '504'].forEach((roomId) => {
+                const floorMesh = roomFloorMeshes[roomId];
+                if (!floorMesh) return;
+                const isDanger = appState.dangerZones[roomId];
+                const hasOccupants = membersList.some((m) => m.room === roomId);
+                if (isDanger || (appState.emergencyMode && hasOccupants)) {
+                    const pulse = 0.5 + 0.5 * Math.sin(t * 7.5);
+                    floorMesh.material.color.setHex(0xef4444);
+                    floorMesh.material.emissive.setHex(0xef4444);
+                    floorMesh.material.emissiveIntensity = 0.35 + pulse * 0.65;
+                } else {
+                    floorMesh.material.color.setHex(0x1e293b);
+                    floorMesh.material.emissive.setHex(0x000000);
+                    floorMesh.material.emissiveIntensity = 0;
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (activeView !== 'simulator') return;
+            const step = 0.45;
+            if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') simMoveStep(0, -step);
+            if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') simMoveStep(0, step);
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') simMoveStep(-step, 0);
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') simMoveStep(step, 0);
+            if (e.key === 'f' || e.key === 'F') igniteHallwayFire();
+            if (e.key === 'r' || e.key === 'R') extinguishHallwayFire();
+        });
+
+        window.addEventListener('resize', () => {
+            resizeThreeSimulator();
+            resizeFfBuilding3D();
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const params = new URLSearchParams(window.location.search);
+            const viewParam = params.get('view') || params.get('mode');
+            if (viewParam === 'firefighter') switchView('firefighter');
+            else if (viewParam === 'simulator') switchView('simulator');
+            else if (viewParam === 'mobile') switchView('mobile');
+            else switchView('dashboard');
+
+            renderApp();
+            initSyncTransport();
+        });
+    </script>
+</body>
+</html>
